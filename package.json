@@ -1,0 +1,27 @@
+{
+  "name": "plugin-inventory-peng",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "author": "Peng",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "test": "tsx --test tests/*.test.ts",
+    "build": "npm run typecheck && node esbuild.config.mjs",
+    "dev": "node esbuild.config.mjs --watch"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.17",
+    "esbuild": "0.25.5",
+    "eslint": "^9.39.4",
+    "obsidian": "latest",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.59.1"
+  }
+}

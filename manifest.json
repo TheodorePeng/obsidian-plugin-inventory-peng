@@ -1,0 +1,9 @@
+{
+  "id": "plugin-inventory-peng",
+  "name": "Plugin Inventory Peng",
+  "version": "0.1.0",
+  "minAppVersion": "1.15.0",
+  "description": "Maintain a vault-local plugin inventory in Bases and preserve Markdown configuration notes.",
+  "author": "Peng",
+  "isDesktopOnly": true
+}
