@@ -38,3 +38,26 @@ test('Base scope changes preserve user views and reject unknown scope', () => {
   assert.ok(changed.includes('Moved/Library'));
   assert.throws(() => patchBase(changed, 'wrong', 'elsewhere', '"settings"', '""'));
 });
+test('schema upgrade: removes favorite, adds tier, source, author, github, aliases', () => {
+  const richRecord: RecordData = {
+    plugin_id: 'my-plugin', name: 'My Plugin', type: 'community',
+    source: 'self-developed', status: 'enabled', version: '1.2.0',
+    author: 'Peng', github: 'https://github.com/TheodorePeng/my-plugin', tier: 'must-have'
+  };
+  const note = newNote(richRecord, '2026-11-11');
+  const parsed = splitNote(note).data;
+  assert.equal(parsed.favorite, undefined);
+  assert.equal(parsed.tier, 'must-have');
+  assert.equal(parsed.source, 'self-developed');
+  assert.equal(parsed.author, 'Peng');
+  assert.equal(parsed.github, 'https://github.com/TheodorePeng/my-plugin');
+  assert.deepEqual(parsed.aliases, ['My Plugin']);
+
+  // Legacy note with favorite: true should have favorite removed on update
+  const legacyNote = `---\nplugin_id: my-plugin\nname: My Plugin\ntype: community\nstatus: enabled\nversion: 1.0.0\nfavorite: true\n---\n\nbody`;
+  const updated = updateNote(legacyNote, richRecord, '2026-11-11');
+  const updatedParsed = splitNote(updated).data;
+  assert.equal(updatedParsed.favorite, undefined);
+  assert.equal(updatedParsed.tier, 'must-have');
+  assert.equal(updatedParsed.source, 'self-developed');
+});

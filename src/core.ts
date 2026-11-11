@@ -2,8 +2,19 @@ import { parseDocument, stringify, isMap, isSeq } from 'yaml';
 
 export type Kind = 'core' | 'community';
 export type Status = 'enabled' | 'disabled' | 'uninstalled';
+export type Source = 'official' | 'brat' | 'self-developed' | 'builtin';
+export type Tier = 'must-have' | 'recommended' | 'optional';
+
 export interface RecordData {
-  plugin_id: string; name: string; type: Kind; status: Status; version: string;
+  plugin_id: string;
+  name: string;
+  type: Kind;
+  source?: Source;
+  status: Status;
+  version: string;
+  author?: string;
+  github?: string;
+  tier?: Tier;
 }
 export interface Paths { root: string; base: string; library: string }
 export interface Location { root: string; baseOverride: string; libraryOverride: string }
@@ -41,16 +52,54 @@ export function splitNote(text: string) {
   return { doc, data, body: text.slice(m[0].length), bom: m[1], eol: text.includes('\r\n') ? '\r\n' : '\n' };
 }
 export function newNote(record: RecordData, date: string): string {
-  return `---\n${stringify({ ...record, last_seen: date, category: [], favorite: false, purpose: '' })}---\n\n${TEMPLATE}`;
+  const initial: Record<string, any> = {
+    plugin_id: record.plugin_id,
+    name: record.name,
+    type: record.type,
+    source: record.source ?? (record.type === 'core' ? 'builtin' : 'official'),
+    status: record.status,
+    tier: record.tier ?? 'recommended',
+    version: record.version,
+    author: record.author ?? '',
+    github: record.github ?? '',
+    aliases: [record.name],
+    category: [],
+    purpose: '',
+    last_seen: date
+  };
+  return `---\n${stringify(initial)}---\n\n${TEMPLATE}`;
 }
 export function updateNote(text: string, record: RecordData, date: string): string {
   const n = splitNote(text);
   if (keyOf(identity(n.data) ?? { type: record.type, plugin_id: '' }) !== keyOf(record)) throw new Error('Note identity changed');
-  const fields: Record<string, string> = { ...record };
+  const fields: Record<string, any> = { ...record };
   if (record.status !== 'uninstalled') fields.last_seen = date;
   let changed = false;
+
+  // Remove deprecated favorite property if present
+  if (n.doc.has('favorite')) {
+    n.doc.delete('favorite');
+    changed = true;
+  }
+  // Ensure tier exists if missing
+  if (!n.doc.has('tier')) {
+    n.doc.set('tier', record.tier ?? 'recommended');
+    changed = true;
+  }
+  // Ensure aliases exists if missing
+  if (!n.doc.has('aliases')) {
+    n.doc.set('aliases', [record.name]);
+    changed = true;
+  }
+
   for (const [k, v] of Object.entries(fields)) {
-    if (n.data[k] !== v) { n.doc.set(k, v); changed = true; }
+    if (v === undefined || v === null || v === '') continue;
+    // github is filled once; never overwrite an existing URL with a coarser manifest author page
+    if (k === 'github' && typeof n.data[k] === 'string' && n.data[k].includes('github.com')) continue;
+    if (n.data[k] !== v) {
+      n.doc.set(k, v);
+      changed = true;
+    }
   }
   if (!changed) return text;
   const yaml = n.doc.toString({ lineWidth: 0 }).replace(/\r?\n/g, n.eol);
@@ -67,16 +116,33 @@ export function settingsFormula(vault: string, tabIds: string[], available: bool
   return `link(${JSON.stringify(`obsidian://adv-uri?vault=${encodeURIComponent(vault)}&settingid=`)} + ${target}, "⚙ Settings")`;
 }
 export function makeBase(library: string, formula: string): string {
-  const columns = ['formula.Plugin', 'note.type', 'formula.Status', 'note.version', 'note.category', 'note.favorite', 'note.purpose', 'formula.Settings', 'note.last_seen'];
+  const columns = [
+    'formula.Plugin', 'note.type', 'note.source', 'note.tier', 'formula.Status',
+    'note.version', 'note.author', 'note.github', 'note.category', 'note.purpose',
+    'formula.Settings', 'note.last_seen'
+  ];
   return stringify({
     filters: { and: ['file.ext == "md"', folderClause(library), 'plugin_id != null && plugin_id != "" && (type == "core" || type == "community")'] },
     formulas: { Plugin: 'link(file.path, name)', Status: 'status', Settings: formula },
-    properties: { 'note.type': { displayName: 'Type' }, 'note.version': { displayName: 'Version' }, 'note.category': { displayName: 'Category' }, 'note.favorite': { displayName: 'Favorite' }, 'note.purpose': { displayName: 'Purpose' }, 'note.last_seen': { displayName: 'Last Seen' } },
+    properties: {
+      'note.type': { displayName: 'Type' },
+      'note.source': { displayName: 'Source' },
+      'note.tier': { displayName: 'Tier' },
+      'note.version': { displayName: 'Version' },
+      'note.author': { displayName: 'Author' },
+      'note.github': { displayName: 'GitHub' },
+      'note.category': { displayName: 'Category' },
+      'note.purpose': { displayName: 'Purpose' },
+      'note.last_seen': { displayName: 'Last Seen' }
+    },
     views: [
-      ['Installed', 'status == "enabled" || status == "disabled"'],
-      ['Enabled', 'status == "enabled"'], ['Disabled', 'status == "disabled"'],
-      ['Uninstalled', 'status == "uninstalled"'], ['All Plugins', undefined]
-    ].map(([name, filters]) => ({ type: 'table', name, ...(filters ? { filters } : {}), order: columns }))
+      { type: 'table', name: 'All Plugins', order: columns },
+      { type: 'table', name: 'Must-Have (装机必备)', filters: 'tier == "must-have"', order: columns },
+      { type: 'table', name: 'Community (社区与自研)', filters: 'type == "community"', order: columns },
+      { type: 'table', name: 'Self-Developed / BRAT (自研与测试)', filters: 'source == "self-developed" || source == "brat"', order: columns },
+      { type: 'table', name: 'Core (内置核心)', filters: 'type == "core"', order: columns },
+      { type: 'table', name: 'Uninstalled (已卸载)', filters: 'status == "uninstalled"', order: columns }
+    ]
   }, { lineWidth: 0 });
 }
 /** Patch only a known managed scope and an unchanged managed formula. */

@@ -15,12 +15,14 @@ interface State extends Location {
   schemaVersion: 1; initialized: boolean; vault: string;
   known: Record<string, Known>; excluded: string[];
   binding: { library: string; formula: string } | null;
+  includeCore?: boolean;
 }
-const defaults = (): State => ({ schemaVersion: 1, root: 'Plugins', baseOverride: '', libraryOverride: '', initialized: false, vault: '', known: {}, excluded: [], binding: null });
+const defaults = (): State => ({ schemaVersion: 1, root: 'Plugins', baseOverride: '', libraryOverride: '', initialized: false, vault: '', known: {}, excluded: [], binding: null, includeCore: false });
 const zh = (): boolean => getLanguage().startsWith('zh');
 const tr = (en: string, cn: string): string => zh() ? cn : en;
 const errorText = (e: unknown): string => e instanceof Error ? e.message : String(e);
 const dateNow = (): string => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
 
 class FolderSuggest extends AbstractInputSuggest<string> {
   constructor(app: App, private input: HTMLInputElement) { super(app, input); }
@@ -39,7 +41,7 @@ export default class InventoryPlugin extends Plugin {
   pending: string[] = [];
   scanner!: Scanner;
   private queue: Promise<void> = Promise.resolve();
-  private busy = false;
+  busy = false;
   private stopping = false;
   private timer: number | null = null;
   private prompted = '';
@@ -106,9 +108,9 @@ export default class InventoryPlugin extends Plugin {
       }
       const existing = this.app.vault.getAbstractFileByPath(paths.base);
       if (existing && !this.settings.binding) throw new Error(tr('An existing Base needs a different new Base path; it will not be overwritten.', '此位置已有 Base，请为新清单选择其他 Base 路径；不会覆盖现有文件。'));
-      const snapshot = await this.scanner.scan();
+      const snapshot = await this.scanner.scan(Boolean(this.settings.includeCore));
       if (!snapshot.complete.core || !snapshot.complete.community) throw new Error(snapshot.errors.join('\n'));
-      if (!snapshot.records.get('core:bases') || snapshot.records.get('core:bases')?.status !== 'enabled') throw new Error(tr('Enable the Bases core plugin first.', '请先手动启用官方 Bases 插件。'));
+      if (!snapshot.basesEnabled) throw new Error(tr('Enable the Bases core plugin first.', '请先手动启用官方 Bases 插件。'));
       await this.mkdir(paths.library); await this.parent(paths.base);
       const formula = settingsFormula(snapshot.settingsFormula.vault, snapshot.settingsFormula.tabIds, snapshot.settingsFormula.available);
       if (!existing) await this.app.vault.create(paths.base, makeBase(paths.library, formula));
@@ -141,11 +143,13 @@ export default class InventoryPlugin extends Plugin {
   private async sync(): Promise<void> {
     const paths = this.paths();
     if (!(this.app.vault.getAbstractFileByPath(paths.library) instanceof TFolder)) throw new Error(tr('Library is missing. Restore or relocate it before refreshing.', 'Library 不存在，请先恢复或重新定位，避免重复生成。'));
-    const snapshot = await this.scanner.scan();
+    const snapshot = await this.scanner.scan(Boolean(this.settings.includeCore));
     const issues = [...snapshot.errors];
     const notes = new Map<string, { path: string; text: string; data: any }[]>();
     let indexComplete = true;
+    let readIdx = 0;
     for (const file of this.app.vault.getMarkdownFiles().filter(f => inFolder(f.path, paths.library))) {
+      if (++readIdx % 5 === 0) await yieldToEventLoop();
       try {
         const text = await this.app.vault.read(file);
         const n = splitNote(text); const id = identity(n.data);
@@ -155,12 +159,15 @@ export default class InventoryPlugin extends Plugin {
       } catch (e) { indexComplete = false; issues.push(`${file.path}: ${errorText(e)}`); }
     }
     const date = dateNow(); let created = 0, updated = 0;
+    let updateIdx = 0;
     for (const [key, group] of notes) {
+      if (++updateIdx % 5 === 0) await yieldToEventLoop();
       if (group.length !== 1) { issues.push(`Duplicate identity: ${key}`); continue; }
       const note = group[0];
       this.settings.excluded = this.settings.excluded.filter(k => k !== key);
       const source = snapshot.records.get(key);
       const old = identity(note.data)!;
+      if (old.type === 'core' && !this.settings.includeCore) continue;
       let record: RecordData = source ?? {
         ...old, name: typeof note.data.name === 'string' ? note.data.name : old.plugin_id,
         version: typeof note.data.version === 'string' ? note.data.version : '',
@@ -181,6 +188,7 @@ export default class InventoryPlugin extends Plugin {
       const path = await this.availableNotePath(record);
       await this.app.vault.create(path, newNote(record, date));
       this.settings.known[key] = { path, home: path, record }; created++;
+      await yieldToEventLoop();
     }
     this.pending = indexComplete ? Object.keys(this.settings.known).filter(k => !notes.has(k) && !this.settings.excluded.includes(k)
       && !this.app.vault.getAbstractFileByPath(this.settings.known[k].path)?.path.startsWith(`${paths.library}/`)) : [];
@@ -267,7 +275,7 @@ export default class InventoryPlugin extends Plugin {
           await this.app.fileManager.renameFile(outside, known.home);
           known.path = known.home;
         } else if (!outside) {
-          const snapshot = await this.scanner.scan();
+          const snapshot = await this.scanner.scan(Boolean(this.settings.includeCore));
           const record = snapshot.records.get(key) ?? { ...known.record, status: known.record.type === 'community' ? 'uninstalled' as const : known.record.status };
           const path = await this.availableNotePath(record);
           await this.app.vault.create(path, newNote(record, dateNow()));
@@ -286,7 +294,7 @@ export default class InventoryPlugin extends Plugin {
     new ConfirmModal(this.app, tr('Restore default Base views? A copy of the current Base will be kept.', '恢复默认 Base 视图？会先保留当前 Base 副本。'), async () => {
       await this.enqueue(async () => {
         const path = this.paths().base; const existing = this.app.vault.getAbstractFileByPath(path);
-        const snapshot = await this.scanner.scan();
+        const snapshot = await this.scanner.scan(Boolean(this.settings.includeCore));
         const formula = settingsFormula(snapshot.settingsFormula.vault, snapshot.settingsFormula.tabIds, snapshot.settingsFormula.available);
         if (existing instanceof TFile) {
           const text = await this.app.vault.read(existing);
@@ -363,8 +371,28 @@ class InventorySettings extends PluginSettingTab {
       .addText(t => t.setValue(draft.baseOverride).onChange(v => { draft.baseOverride = v; preview(); }));
     new Setting(details).setName(tr('Notes folder override', '独立 Library 路径')).setDesc(tr('Leave blank to follow the inventory folder.', '留空则随总目录自动推导。'))
       .addText(t => { t.setValue(draft.libraryOverride).onChange(v => { draft.libraryOverride = v; preview(); }); new FolderSuggest(this.app, t.inputEl); });
-    new Setting(el).addButton(b => b.setButtonText(tr('Create / check inventory', '创建／检查清单')).setCta().onClick(() => {
-      b.setDisabled(true); action(this.plugin.initialize(draft).then(() => { new Notice(this.plugin.summary); this.display(); }).finally(() => b.setDisabled(false)));
+    new Setting(el).setName(tr('Include Obsidian core plugins', '包含官方内置功能'))
+      .setDesc(tr('Track Obsidian built-in features (such as Canvas, Search, etc.) in the inventory. Disabled by default.', '在清单中记录 Obsidian 官方内置功能（如白板、搜索等）。默认关闭，仅管理第三方社区插件。'))
+      .addToggle(t => t.setValue(this.plugin.settings.includeCore ?? false).onChange(async v => {
+        this.plugin.settings.includeCore = v;
+        await this.plugin.persist();
+        await this.plugin.refresh(true);
+        this.display();
+      }));
+    new Setting(el).addButton(b => b.setButtonText(tr('Create / check inventory', '创建／检查清单')).setCta().onClick(async () => {
+      if (this.plugin.busy) return;
+      b.setDisabled(true);
+      b.setButtonText(tr('Processing...', '正在处理...'));
+      try {
+        await this.plugin.initialize(draft);
+        new Notice(this.plugin.summary);
+      } catch (e) {
+        new Notice(errorText(e));
+      } finally {
+        b.setDisabled(false);
+        b.setButtonText(tr('Create / check inventory', '创建／检查清单'));
+        this.display();
+      }
     })).addButton(b => b.setButtonText(tr('Open inventory', '打开清单')).onClick(() => action(this.plugin.openInventory())));
     if (this.plugin.settings.initialized) el.createEl('p', { text: tr('Stage version: relocate the existing folders/Base through Obsidian File Explorer. Paths follow these moves. A transactional migration wizard is deferred.', '阶段版：请在 Obsidian 文件列表中移动已有目录或 Base，插件会跟踪新路径。事务式迁移向导留待后续。') });
     new Setting(el).setName(tr('Inventory', '清单')).setHeading();
