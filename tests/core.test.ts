@@ -84,3 +84,15 @@ test('new note carries a clickable settings property', () => {
   assert.equal(Object.keys(parsed.data).at(-1), 'settings');
   assert.equal(splitNote(newNote(record, '2026-11-12')).data.settings, undefined);
 });
+test('refresh writes refreshes and preserves the settings property', () => {
+  const link = settingsLink('My Vault', ['example'], record);
+  const other = settingsLink('My Vault', ['example'], { ...record, status: 'disabled' });
+  const withLink = updateNote(newNote(record, '2026-11-12'), record, '2026-11-12', link);
+  assert.equal(splitNote(withLink).data.settings, link);
+  assert.equal(Object.keys(splitNote(withLink).data).at(-1), 'settings');
+  assert.equal(splitNote(updateNote(withLink, record, '2026-11-12', other)).data.settings, other);
+  // No link available: the previous value is kept, neither written nor removed.
+  assert.equal(splitNote(updateNote(withLink, { ...record, version: '2.0.0' }, '2026-11-12', undefined)).data.settings, link);
+  // An unchanged link must leave the file byte-identical.
+  assert.equal(updateNote(withLink, record, '2026-11-12', link), withLink);
+});

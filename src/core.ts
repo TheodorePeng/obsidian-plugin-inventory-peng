@@ -70,7 +70,7 @@ export function newNote(record: RecordData, date: string, settings?: string): st
   if (settings !== undefined) initial.settings = settings;
   return `---\n${stringify(initial)}---\n\n${TEMPLATE}`;
 }
-export function updateNote(text: string, record: RecordData, date: string): string {
+export function updateNote(text: string, record: RecordData, date: string, settings?: string): string {
   const n = splitNote(text);
   if (keyOf(identity(n.data) ?? { type: record.type, plugin_id: '' }) !== keyOf(record)) throw new Error('Note identity changed');
   const fields: Record<string, any> = { ...record };
@@ -101,6 +101,11 @@ export function updateNote(text: string, record: RecordData, date: string): stri
       n.doc.set(k, v);
       changed = true;
     }
+  }
+  // The settings link mirrors the Base formula; without a link the previous value is kept.
+  if (settings !== undefined && n.data.settings !== settings) {
+    n.doc.set('settings', settings);
+    changed = true;
   }
   if (!changed) return text;
   const yaml = n.doc.toString({ lineWidth: 0 }).replace(/\r?\n/g, n.eol);
