@@ -1,6 +1,6 @@
 # Plugin Inventory Peng
 
-Version 0.1.0 — usable stage release for macOS / Obsidian 1.15.0+.
+Version 0.1.1 — usable stage release for macOS / Obsidian 1.15.0+.
 
 [GitHub 仓库](https://github.com/TheodorePeng/obsidian-plugin-inventory-peng) · [Releases](https://github.com/TheodorePeng/obsidian-plugin-inventory-peng/releases) · Obsidian 1.15.0+ · macOS only
 

@@ -28,7 +28,7 @@ export class Scanner {
       if (!core || typeof core !== 'object' || !Object.keys(core).length) {
         result.complete.core = false; result.errors.push('Core plugin state API unavailable');
       } else {
-        for (const [id, item] of Object.entries(core) as [string, any][]) {
+        for (const [id, item] of Object.entries<any>(core)) {
           if (typeof item.enabled !== 'boolean' || typeof item.instance?.name !== 'string') {
             result.complete.core = false; result.errors.push(`Core metadata unavailable: ${id}`); continue;
           }

@@ -48,7 +48,7 @@ export function splitNote(text: string) {
   if (!m) throw new Error('Missing or incomplete YAML frontmatter');
   const doc = parseDocument(m[2]);
   if (doc.errors.length || !isMap(doc.contents)) throw new Error('Invalid YAML frontmatter');
-  const data = doc.toJS() as any;
+  const data = doc.toJS();
   return { doc, data, body: text.slice(m[0].length), bom: m[1], eol: text.includes('\r\n') ? '\r\n' : '\n' };
 }
 export function newNote(record: RecordData, date: string, settings?: string): string {
@@ -112,6 +112,7 @@ export function updateNote(text: string, record: RecordData, date: string, setti
   return `${n.bom}---${n.eol}${yaml}---${n.eol}${n.body}`;
 }
 export function filename(record: RecordData): string {
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point: they are invalid in filenames.
   return record.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/[. ]+$/, '').trim() || record.plugin_id.replace(/[^\w-]/g, '-');
 }
 export const folderClause = (library: string): string => `file.inFolder(${JSON.stringify(library)})`;

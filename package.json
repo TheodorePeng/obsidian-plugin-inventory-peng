@@ -1,6 +1,6 @@
 {
   "name": "plugin-inventory-peng",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "author": "Peng",
@@ -19,6 +19,7 @@
     "@types/node": "^22.15.17",
     "esbuild": "0.25.5",
     "eslint": "^9.39.4",
+    "eslint-plugin-obsidianmd": "^0.5.1",
     "obsidian": "latest",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
