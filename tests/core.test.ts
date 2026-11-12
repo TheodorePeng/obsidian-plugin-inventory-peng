@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseDocument } from 'yaml';
-import { locations, makeBase, newNote, patchBase, splitNote, updateNote, type RecordData } from '../src/core';
+import { locations, makeBase, newNote, patchBase, settingsFormula, settingsLink, settingsTarget, settingsUrl, splitNote, updateNote, type RecordData } from '../src/core';
 
 const record: RecordData = { plugin_id: 'example', name: 'Example', type: 'community', status: 'enabled', version: '1.0.0' };
 test('refresh preserves authored properties, comments and mixed-language body', () => {
@@ -60,4 +60,18 @@ test('schema upgrade: removes favorite, adds tier, source, author, github, alias
   assert.equal(updatedParsed.favorite, undefined);
   assert.equal(updatedParsed.tier, 'must-have');
   assert.equal(updatedParsed.source, 'self-developed');
+});
+test('settings target mirrors the Base formula decision table', () => {
+  const tabs = ['alpha', 'beta'];
+  const base = { plugin_id: 'alpha', type: 'community' as const, status: 'enabled' as const };
+  assert.equal(settingsTarget(base, tabs), 'alpha');
+  assert.equal(settingsTarget({ ...base, plugin_id: 'gamma' }, tabs), 'community-plugins');
+  assert.equal(settingsTarget({ ...base, status: 'disabled' }, tabs), 'community-plugins');
+  assert.equal(settingsTarget({ ...base, type: 'core' }, tabs), 'alpha');
+  assert.equal(settingsTarget({ ...base, plugin_id: 'gamma', type: 'core' }, tabs), 'core-plugins');
+  assert.equal(settingsTarget({ ...base, type: 'core', status: 'disabled' }, tabs), 'core-plugins');
+  // The formula must encode the same table: changing one side alone turns this red.
+  const formula = settingsFormula('My Vault', tabs, true);
+  assert.ok(formula.includes('if(status == "enabled" && ["alpha","beta"].contains(plugin_id), plugin_id, if(type == "core", "core-plugins", "community-plugins"))'));
+  assert.equal(settingsUrl('My Vault', 'alpha'), 'obsidian://adv-uri?vault=My%20Vault&settingid=alpha');
 });

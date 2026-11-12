@@ -109,6 +109,21 @@ export function filename(record: RecordData): string {
   return record.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/[. ]+$/, '').trim() || record.plugin_id.replace(/[^\w-]/g, '-');
 }
 export const folderClause = (library: string): string => `file.inFolder(${JSON.stringify(library)})`;
+/** The Advanced URI target for a record: its own settings tab when enabled and present,
+ *  otherwise the plugin list page. Mirrors the Base formula decision table. */
+export function settingsTarget(record: Pick<RecordData, 'plugin_id' | 'type' | 'status'>, tabIds: string[]): string {
+  if (record.status === 'enabled' && tabIds.includes(record.plugin_id)) return record.plugin_id;
+  return record.type === 'core' ? 'core-plugins' : 'community-plugins';
+}
+/** The Advanced URI URL that opens the settings target. */
+export function settingsUrl(vault: string, target: string): string {
+  return `obsidian://adv-uri?vault=${encodeURIComponent(vault)}&settingid=${target}`;
+}
+/** The clickable property value written into a note. */
+export function settingsLink(vault: string, tabIds: string[], record: Pick<RecordData, 'plugin_id' | 'type' | 'status'>): string {
+  return `[⚙ Settings](${settingsUrl(vault, settingsTarget(record, tabIds))})`;
+}
+/** The Base-side twin of settingsTarget(): keep both decision tables in sync. */
 export function settingsFormula(vault: string, tabIds: string[], available: boolean): string {
   if (!available) return '""';
   const safeTabs = tabIds.filter(x => /^[a-zA-Z0-9_-]+$/.test(x));
