@@ -5,10 +5,10 @@ import {
 import { parseDocument } from 'yaml';
 import {
   TEMPLATE, filename, identity, inFolder, keyOf, locations, makeBase, newNote,
-  patchBase, settingsFormula, splitNote, updateNote,
+  patchBase, settingsFormula, settingsLink, splitNote, updateNote,
   type Location, type Paths, type RecordData
 } from './core';
-import { Scanner } from './compat';
+import { Scanner, type Snapshot } from './compat';
 
 interface Known { path: string; home: string; record: RecordData }
 interface State extends Location {
@@ -23,6 +23,9 @@ const tr = (en: string, cn: string): string => zh() ? cn : en;
 const errorText = (e: unknown): string => e instanceof Error ? e.message : String(e);
 const dateNow = (): string => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setTimeout(resolve, 0));
+/** The clickable settings entry for a record; undefined when Advanced URI is unavailable. */
+const settingsLinkFor = (formula: Snapshot['settingsFormula'], record: RecordData): string | undefined =>
+  formula.available ? settingsLink(formula.vault, formula.tabIds, record) : undefined;
 
 class FolderSuggest extends AbstractInputSuggest<string> {
   constructor(app: App, private input: HTMLInputElement) { super(app, input); }
@@ -176,9 +179,10 @@ export default class InventoryPlugin extends Plugin {
       if (!source && old.type === 'community' && snapshot.complete.community) record = { ...record, status: 'uninstalled' };
       const canUpdate = source ? snapshot.complete[source.type] : old.type === 'community' && snapshot.complete.community;
       this.settings.known[key] = { path: note.path, home: note.path, record };
-      if (canUpdate && updateNote(note.text, record, date) !== note.text) {
+      const settings = settingsLinkFor(snapshot.settingsFormula, record);
+      if (canUpdate && updateNote(note.text, record, date, settings) !== note.text) {
         try {
-          await this.process(note.path, current => updateNote(current, record, date)); updated++;
+          await this.process(note.path, current => updateNote(current, record, date, settings)); updated++;
         } catch (e) { issues.push(errorText(e)); }
       }
     }
@@ -186,7 +190,7 @@ export default class InventoryPlugin extends Plugin {
     if (indexComplete) for (const [key, record] of snapshot.records) {
       if (!snapshot.complete[record.type] || notes.has(key) || this.settings.excluded.includes(key) || this.settings.known[key]) continue;
       const path = await this.availableNotePath(record);
-      await this.app.vault.create(path, newNote(record, date));
+      await this.app.vault.create(path, newNote(record, date, settingsLinkFor(snapshot.settingsFormula, record)));
       this.settings.known[key] = { path, home: path, record }; created++;
       await yieldToEventLoop();
     }
@@ -208,6 +212,7 @@ export default class InventoryPlugin extends Plugin {
         const actualFormula = parseDocument(after).getIn(['formulas', 'Settings']);
         this.settings.binding.library = paths.library;
         if (actualFormula === formula) this.settings.binding.formula = formula;
+        else issues.push(tr('The Settings formula was edited manually; the Base column and the note property may differ.', 'Settings 公式已被手动修改，Base 列与 Note 属性可能不一致。'));
       } catch (e) { issues.push(errorText(e)); }
     } else issues.push(tr('Base file missing; restore it or use Restore default views.', 'Base 文件缺失，请恢复文件或使用“恢复默认视图”。'));
     this.errors = issues;
@@ -278,7 +283,7 @@ export default class InventoryPlugin extends Plugin {
           const snapshot = await this.scanner.scan(Boolean(this.settings.includeCore));
           const record = snapshot.records.get(key) ?? { ...known.record, status: known.record.type === 'community' ? 'uninstalled' as const : known.record.status };
           const path = await this.availableNotePath(record);
-          await this.app.vault.create(path, newNote(record, dateNow()));
+          await this.app.vault.create(path, newNote(record, dateNow(), settingsLinkFor(snapshot.settingsFormula, record)));
           this.settings.known[key] = { path, home: path, record };
         }
         this.settings.excluded = this.settings.excluded.filter(k => k !== key);
