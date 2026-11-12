@@ -73,7 +73,7 @@ Plugins/
 
 | 维护方 | 内容 |
 |---|---|
-| 本插件自动维护 | `plugin_id`、`name`、`type`、`status`、`version`、`last_seen` |
+| 本插件自动维护 | `plugin_id`、`name`、`type`、`status`、`version`、`last_seen`、`settings` |
 | 用户或 AI Agent 维护 | `category`、`favorite`、`purpose`、正文及其他扩展属性 |
 
 `status` 使用 `enabled`、`disabled`、`uninstalled`；Core 插件没有普通意义上的卸载，只有前两种状态。Core 没有独立版本时留空。`last_seen` 表示最后一次成功确认插件仍存在的日期。
@@ -81,6 +81,8 @@ Plugins/
 刷新时只更新自动字段。用户字段和正文保留，数据未变化时不改写文件；卸载社区插件只更新状态，重新安装时按插件身份复用旧记录。
 
 Settings 列需要 **Advanced URI** 已安装并启用。链接携带当前 Vault 标识；目标无设置页时进入插件总览。不自动安装任何依赖或启停其他插件。
+
+同一条设置链接也写在每条 Note 的 `settings` 属性里，所以单独打开某条 Note 时，属性面板中同样有一个可点击的 `⚙ Settings` 入口。该属性与 Settings 列指向同一个目标，由同一次刷新维护；Advanced URI 不可用时不再写入新链接，已有链接保持原样。若你手动改过 Base 里的 Settings 公式，插件会在设置中提示 Base 列与 Note 属性可能不一致。
 
 ## 与 AI Agent 协作
 
