@@ -75,3 +75,12 @@ test('settings target mirrors the Base formula decision table', () => {
   assert.ok(formula.includes('if(status == "enabled" && ["alpha","beta"].contains(plugin_id), plugin_id, if(type == "core", "core-plugins", "community-plugins"))'));
   assert.equal(settingsUrl('My Vault', 'alpha'), 'obsidian://adv-uri?vault=My%20Vault&settingid=alpha');
 });
+test('new note carries a clickable settings property', () => {
+  const link = settingsLink('My Vault', ['example'], record);
+  const parsed = splitNote(newNote(record, '2026-11-12', link));
+  assert.equal(parsed.data.settings, link);
+  assert.match(link, /^\[⚙ Settings\]\(obsidian:\/\/adv-uri\?vault=My%20Vault&settingid=example\)$/);
+  assert.equal(typeof parsed.data.settings, 'string');
+  assert.equal(Object.keys(parsed.data).at(-1), 'settings');
+  assert.equal(splitNote(newNote(record, '2026-11-12')).data.settings, undefined);
+});

@@ -51,7 +51,7 @@ export function splitNote(text: string) {
   const data = doc.toJS() as any;
   return { doc, data, body: text.slice(m[0].length), bom: m[1], eol: text.includes('\r\n') ? '\r\n' : '\n' };
 }
-export function newNote(record: RecordData, date: string): string {
+export function newNote(record: RecordData, date: string, settings?: string): string {
   const initial: Record<string, any> = {
     plugin_id: record.plugin_id,
     name: record.name,
@@ -67,6 +67,7 @@ export function newNote(record: RecordData, date: string): string {
     purpose: '',
     last_seen: date
   };
+  if (settings !== undefined) initial.settings = settings;
   return `---\n${stringify(initial)}---\n\n${TEMPLATE}`;
 }
 export function updateNote(text: string, record: RecordData, date: string): string {
