@@ -1,3 +1,27 @@
-.pip-path { overflow-wrap: anywhere; color: var(--text-muted); }
+.pip-settings .setting-item { gap: var(--size-4-3); }
+.pip-settings .setting-item-control { min-width: min(55%, 420px); }
+.pip-settings .setting-item-control input[type='text'] { flex: 1 1 260px; min-width: 0; width: 100%; }
+.pip-settings .setting-item-heading { margin-top: var(--size-4-6); }
+.pip-settings .pip-intro, .pip-settings .pip-help { color: var(--text-muted); font-size: var(--font-ui-small); line-height: 1.5; }
+.pip-settings .pip-feedback, .pip-settings .pip-status, .pip-settings .pip-recovery { padding: var(--size-4-3); border-radius: var(--radius-m); overflow-wrap: anywhere; white-space: pre-wrap; }
+.pip-settings .pip-feedback { background: var(--background-secondary); color: var(--text-muted); }
+.pip-settings .pip-feedback.is-error, .pip-settings .pip-error { color: var(--text-error); }
+.pip-settings .pip-status:empty { display: none; }
+.pip-settings .pip-status:not(:empty), .pip-settings .pip-recovery { background: var(--background-secondary); border: 1px solid var(--background-modifier-border); margin-top: var(--size-4-3); }
+.pip-settings .pip-summary { font-weight: var(--font-semibold); overflow-wrap: anywhere; }
+.pip-settings .pip-actions .setting-item-control { flex-wrap: wrap; }
+.pip-settings button:focus-visible, .pip-settings input:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+.pip-path { overflow-wrap: anywhere; white-space: pre-wrap; color: var(--text-muted); }
 .pip-rows { max-height: 60vh; overflow-y: auto; }
-.pip-template { white-space: pre-wrap; font-size: var(--font-smallest); }
+.pip-template { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--font-ui-small); }
+@media (max-width: 650px) {
+  .pip-settings .setting-item:not(.setting-item-heading) { flex-wrap: wrap; }
+  .pip-settings .setting-item-control { width: 100%; min-width: 0; }
+}
+
+.pip-confirm { white-space: pre-wrap; overflow-wrap: anywhere; }
+.pip-settings .pip-location { flex-wrap: wrap; }
+.pip-settings .pip-location .setting-item-info { flex-basis: 100%; }
+.pip-settings .pip-location .setting-item-control { width: 100%; }
+.pip-confirm { max-height: 55vh; overflow-y: auto; }
+.pip-settings .pip-root-paths[hidden], .pip-settings .pip-independent-paths[hidden] { display: none; }

@@ -2,7 +2,7 @@ import { parseDocument, stringify, isMap, isSeq } from 'yaml';
 
 export type Kind = 'core' | 'community';
 export type Status = 'enabled' | 'disabled' | 'uninstalled';
-export type Source = 'official' | 'brat' | 'self-developed' | 'builtin';
+export type Source = 'Built-in' | 'Community' | 'Non-community' | 'official' | 'brat' | 'self-developed' | 'builtin';
 export type Tier = 'must-have' | 'recommended' | 'optional';
 
 export interface RecordData {
@@ -16,32 +16,63 @@ export interface RecordData {
   github?: string;
   tier?: Tier;
 }
-export interface Paths { root: string; base: string; library: string }
-export interface Location { root: string; baseOverride: string; libraryOverride: string }
+export interface Paths { base: string; library: string }
+export type Location = Paths;
+export interface StorageChoice { mode: 'root' | 'independent'; root: string }
+export function rootLocations(root: string, configDir = '.obsidian'): Paths {
+  const r = cleanPath(root);
+  return locations({ base: `${r}/Plugin Inventory.base`, library: `${r}/Plugin Library` }, configDir);
+}
+export function inferStorageRoot(paths: Paths): string | null {
+  const suffix = '/Plugin Inventory.base';
+  if (!paths.base.endsWith(suffix)) return null;
+  const root = paths.base.slice(0, -suffix.length);
+  return root && paths.library === `${root}/Plugin Library` ? root : null;
+}
+export interface LegacyLocation { root: string; baseOverride: string; libraryOverride: string }
+export interface MoveStep { from: string; to: string; kind: 'file' | 'folder' }
+export function legacyLocations(s: LegacyLocation): Location {
+  return { base: s.baseOverride || `${s.root}/Plugin Inventory.base`, library: s.libraryOverride || `${s.root}/Library` };
+}
 export const TEMPLATE = '## Configuration\n\n| Setting | Desired Value | Steps | Verification | Reason | Notes |\n|---|---|---|---|---|---|\n| | | | | | |\n';
 export const keyOf = (r: Pick<RecordData, 'type' | 'plugin_id'>): string => `${r.type}:${r.plugin_id}`;
 export const inFolder = (path: string, folder: string): boolean => path.startsWith(`${folder}/`);
 export function cleanPath(value: string): string {
   const p = value.trim().replace(/\\/g, '/').replace(/\/+$/, '');
-  if (!p || p.startsWith('/') || /^[A-Za-z]:/.test(p) || p.split('/').some(x => !x || x === '.' || x === '..')) {
+  // eslint-disable-next-line no-control-regex -- reject control characters in user-supplied paths.
+  if (!p || p.startsWith('/') || /[:*?"<>|\u0000-\u001f]/.test(p) || p.split('/').some(x => !x || x === '.' || x === '..')) {
     throw new Error('Use a non-empty vault-relative path without . or ..');
   }
   return p;
 }
 export function locations(s: Location, configDir = '.obsidian'): Paths {
-  const root = cleanPath(s.root);
-  const base = cleanPath(s.baseOverride || `${root}/Plugin Inventory.base`);
-  const library = cleanPath(s.libraryOverride || `${root}/Library`);
-  for (const p of [root, base, library]) {
-    if (p === configDir || inFolder(p, configDir)) throw new Error('The application config directory is not an inventory location.');
+  const base = cleanPath(s.base);
+  const library = cleanPath(s.library);
+  for (const p of [base, library]) {
+    if (p.toLowerCase() === configDir.toLowerCase() || inFolder(p.toLowerCase(), configDir.toLowerCase())) throw new Error('The application config directory is not an inventory location.');
   }
   if (!base.endsWith('.base')) throw new Error('Database file must end in .base');
-  if (base === library) throw new Error('Database and notes paths must differ');
-  return { root, base, library };
+  if (base === library || inFolder(library, base)) throw new Error('The Base file cannot be the notes folder or its parent.');
+  return { base, library };
+}
+export function movePlan(from: Paths, to: Paths): MoveStep[] {
+  const folderMoved = from.library !== to.library;
+  if (folderMoved && (inFolder(from.library, to.library) || inFolder(to.library, from.library))) throw new Error('The old and new notes folders cannot overlap.');
+  if (folderMoved && (to.base === from.library || inFolder(to.base, from.library))) throw new Error('The new Base cannot be inside the old notes folder.');
+  const steps: MoveStep[] = [];
+  let base = from.base;
+  if (folderMoved) {
+    steps.push({ from: from.library, to: to.library, kind: 'folder' });
+    if (inFolder(base, from.library)) base = to.library + base.slice(from.library.length);
+  }
+  if (base !== to.base) steps.push({ from: base, to: to.base, kind: 'file' });
+  return steps;
 }
 export function identity(data: any): Pick<RecordData, 'type' | 'plugin_id'> | null {
-  return data && (data.type === 'core' || data.type === 'community') && typeof data.plugin_id === 'string' && data.plugin_id.length > 0
-    ? { type: data.type, plugin_id: data.plugin_id } : null;
+  if (!data || typeof data.plugin_id !== 'string' || !data.plugin_id) return null;
+  const kind: Kind | null = data.type === 'core' || data.type === 'community' ? data.type
+    : data.source === 'Built-in' ? 'core' : data.source === 'Community' || data.source === 'Non-community' ? 'community' : null;
+  return kind ? { type: kind, plugin_id: data.plugin_id } : null;
 }
 export function splitNote(text: string) {
   const m = /^(\uFEFF?)---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
@@ -51,12 +82,12 @@ export function splitNote(text: string) {
   const data = doc.toJS();
   return { doc, data, body: text.slice(m[0].length), bom: m[1], eol: text.includes('\r\n') ? '\r\n' : '\n' };
 }
-export function newNote(record: RecordData, date: string, settings?: string): string {
+export function newNote(record: RecordData, date: string, settings?: string, legacy = false): string {
   const initial: Record<string, any> = {
     plugin_id: record.plugin_id,
     name: record.name,
-    type: record.type,
-    source: record.source ?? (record.type === 'core' ? 'builtin' : 'official'),
+    ...(legacy ? { type: record.type } : {}),
+    source: record.source ?? (record.type === 'core' ? (legacy ? 'builtin' : 'Built-in') : (legacy ? 'official' : 'Non-community')),
     status: record.status,
     tier: record.tier ?? 'recommended',
     version: record.version,
@@ -70,28 +101,16 @@ export function newNote(record: RecordData, date: string, settings?: string): st
   if (settings !== undefined) initial.settings = settings;
   return `---\n${stringify(initial)}---\n\n${TEMPLATE}`;
 }
-export function updateNote(text: string, record: RecordData, date: string, settings?: string): string {
+export function updateNote(text: string, record: RecordData, date: string, settings?: string, legacy = false, confirmedOwner = false): string {
   const n = splitNote(text);
-  if (keyOf(identity(n.data) ?? { type: record.type, plugin_id: '' }) !== keyOf(record)) throw new Error('Note identity changed');
+  if (keyOf(identity(n.data) ?? { type: record.type, plugin_id: '' }) !== keyOf(record) && !confirmedOwner) throw new Error('Note identity changed');
   const fields: Record<string, any> = { ...record };
+  if (!legacy) delete fields.type;
   if (record.status !== 'uninstalled') fields.last_seen = date;
   let changed = false;
 
-  // Remove deprecated favorite property if present
-  if (n.doc.has('favorite')) {
-    n.doc.delete('favorite');
-    changed = true;
-  }
-  // Ensure tier exists if missing
-  if (!n.doc.has('tier')) {
-    n.doc.set('tier', record.tier ?? 'recommended');
-    changed = true;
-  }
-  // Ensure aliases exists if missing
-  if (!n.doc.has('aliases')) {
-    n.doc.set('aliases', [record.name]);
-    changed = true;
-  }
+  // User-managed favorite, tier and aliases are preserved, including when removed.
+  delete fields.tier;
 
   for (const [k, v] of Object.entries(fields)) {
     if (v === undefined || v === null || v === '') continue;
@@ -131,23 +150,23 @@ export function settingsLink(vault: string, tabIds: string[], record: Pick<Recor
   return `[⚙ Settings](${settingsUrl(vault, settingsTarget(record, tabIds))})`;
 }
 /** The Base-side twin of settingsTarget(): keep both decision tables in sync. */
-export function settingsFormula(vault: string, tabIds: string[], available: boolean): string {
+export function settingsFormula(vault: string, tabIds: string[], available: boolean, legacy = false): string {
   if (!available) return '""';
   const safeTabs = tabIds.filter(x => /^[a-zA-Z0-9_-]+$/.test(x));
-  const target = `if(status == "enabled" && ${JSON.stringify(safeTabs)}.contains(plugin_id), plugin_id, if(type == "core", "core-plugins", "community-plugins"))`;
+  const isCore = legacy ? 'type == "core"' : 'source == "Built-in"';
+  const target = `if(status == "enabled" && ${JSON.stringify(safeTabs)}.contains(plugin_id), plugin_id, if(${isCore}, "core-plugins", "community-plugins"))`;
   return `link(${JSON.stringify(`obsidian://adv-uri?vault=${encodeURIComponent(vault)}&settingid=`)} + ${target}, "⚙ Settings")`;
 }
 export function makeBase(library: string, formula: string): string {
   const columns = [
-    'formula.Plugin', 'note.type', 'note.source', 'note.tier', 'formula.Status',
+    'formula.Plugin', 'note.source', 'note.tier', 'formula.Status',
     'note.version', 'note.author', 'note.github', 'note.category', 'note.purpose',
     'formula.Settings', 'note.last_seen'
   ];
   return stringify({
-    filters: { and: ['file.ext == "md"', folderClause(library), 'plugin_id != null && plugin_id != "" && (type == "core" || type == "community")'] },
+    filters: { and: ['file.ext == "md"', folderClause(library), 'plugin_id != null && plugin_id != "" && (source == "Built-in" || source == "Community" || source == "Non-community")'] },
     formulas: { Plugin: 'link(file.path, name)', Status: 'status', Settings: formula },
     properties: {
-      'note.type': { displayName: 'Type' },
       'note.source': { displayName: 'Source' },
       'note.tier': { displayName: 'Tier' },
       'note.version': { displayName: 'Version' },
@@ -155,14 +174,15 @@ export function makeBase(library: string, formula: string): string {
       'note.github': { displayName: 'GitHub' },
       'note.category': { displayName: 'Category' },
       'note.purpose': { displayName: 'Purpose' },
-      'note.last_seen': { displayName: 'Last Seen' }
+      'note.last_seen': { displayName: 'Last Detected' }
     },
     views: [
       { type: 'table', name: 'All Plugins', order: columns },
       { type: 'table', name: 'Must-Have (装机必备)', filters: 'tier == "must-have"', order: columns },
-      { type: 'table', name: 'Community (社区与自研)', filters: 'type == "community"', order: columns },
-      { type: 'table', name: 'Self-Developed / BRAT (自研与测试)', filters: 'source == "self-developed" || source == "brat"', order: columns },
-      { type: 'table', name: 'Core (内置核心)', filters: 'type == "core"', order: columns },
+      { type: 'table', name: 'Third-party', filters: 'source != "Built-in"', order: columns },
+      { type: 'table', name: 'Community', filters: 'source == "Community"', order: columns },
+      { type: 'table', name: 'Non-community', filters: 'source == "Non-community"', order: columns },
+      { type: 'table', name: 'Core (内置核心)', filters: 'source == "Built-in"', order: columns },
       { type: 'table', name: 'Uninstalled (已卸载)', filters: 'status == "uninstalled"', order: columns }
     ]
   }, { lineWidth: 0 });

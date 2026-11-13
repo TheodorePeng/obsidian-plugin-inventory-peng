@@ -1,5 +1,6 @@
 import type { App } from 'obsidian';
 import { keyOf, type RecordData, type Kind, type Source } from './core';
+import { classify } from './registry';
 
 export interface Snapshot {
   records: Map<string, RecordData>;
@@ -12,7 +13,7 @@ export interface Snapshot {
 export class Scanner {
   private cache = new Map<string, { mtime: number; size: number; value: any }>();
   constructor(private app: App) {}
-  async scan(includeCore = false): Promise<Snapshot> {
+  async scan(includeCore = false, legacy = false, registry: ReadonlySet<string> | null = null, includeDisabledCore = false): Promise<Snapshot> {
     const runtime = this.app as any;
     const core = runtime.internalPlugins?.plugins;
     const basesPlugin = core?.['bases'];
@@ -32,13 +33,13 @@ export class Scanner {
           if (typeof item.enabled !== 'boolean' || typeof item.instance?.name !== 'string') {
             result.complete.core = false; result.errors.push(`Core metadata unavailable: ${id}`); continue;
           }
-          if (!item.enabled) continue;
+          if (!item.enabled && !includeDisabledCore) continue;
           const record: RecordData = {
             plugin_id: id,
             name: item.instance.name,
             type: 'core',
-            source: 'builtin',
-            status: 'enabled',
+            source: legacy ? 'builtin' : 'Built-in',
+            status: item.enabled ? 'enabled' : 'disabled',
             version: '',
             author: 'Obsidian',
             github: 'https://obsidian.md'
@@ -95,6 +96,7 @@ export class Scanner {
           } else if (author.toLowerCase().includes('peng') || (github && github.toLowerCase().includes('theodorepeng'))) {
             source = 'self-developed';
           }
+          if (!legacy) source = classify('community', m.id, registry);
 
           const record: RecordData = {
             plugin_id: m.id,
