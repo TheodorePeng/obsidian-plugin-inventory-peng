@@ -26,20 +26,14 @@ export default tseslint.config(
     ],
   },
 
-  // ── TypeScript parser and recommended rules ──────────────────────────────
-  // Applied globally: without the parser, ESLint would try to read `src/**`
-  // as plain JavaScript and fail with "Parsing error".
-  ...tseslint.configs.recommended,
-
   // ── Obsidian community ruleset ───────────────────────────────────────────
   // Same ruleset the Obsidian automated reviewer runs. Applied only once the
   // package is installed; see the note above.
   ...(obsidianmd ? obsidianmd.configs.recommended : []),
 
   // ── Type information ──────────────────────────────────────────────────────
-  // Some community rules (await-thenable and friends) require type information.
-  // `tsconfig.eslint.json` is a standalone project — no `extends` — because
-  // typescript-eslint's parser rejects the project's "moduleResolution": "Bundler".
+  // The Obsidian community ruleset enables type-aware rules such as
+  // await-thenable, so every linted TypeScript file needs parserOptions.project.
   {
     files: ['src/**/*.ts', 'tests/**/*.ts'],
     languageOptions: {
@@ -51,10 +45,7 @@ export default tseslint.config(
   },
 
   // ── Obsidian's `any`-heavy API surface ───────────────────────────────────
-  // Obsidian types several callbacks and settings as `any` (processFrontMatter
-  // callbacks, plugin settings, manifest reads). Reporting every access as an
-  // error buries the real findings, so these stay visible as warnings — the
-  // same trade-off obsidian-attachments-library-peng already makes.
+  // Keep unsafe-* findings visible as warnings rather than release blockers.
   {
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'warn',
@@ -77,6 +68,9 @@ export default tseslint.config(
   // ── Test files: relaxed rules ────────────────────────────────────────────
   {
     files: ['tests/**/*.ts', '__mocks__/**/*.ts'],
+    extends: [
+      ...tseslint.configs.recommended,
+    ],
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-unused-vars': ['error', {
