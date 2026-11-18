@@ -17,21 +17,9 @@ export interface RecordData {
   tier?: Tier;
 }
 export interface Paths { base: string; library: string }
-export type Location = Paths;
-export interface StorageChoice { mode: 'root' | 'independent'; root: string }
-export function rootLocations(root: string, configDir = '.obsidian'): Paths {
-  const r = cleanPath(root);
-  return locations({ base: `${r}/Plugin Inventory.base`, library: `${r}/Plugin Library` }, configDir);
-}
-export function inferStorageRoot(paths: Paths): string | null {
-  const suffix = '/Plugin Inventory.base';
-  if (!paths.base.endsWith(suffix)) return null;
-  const root = paths.base.slice(0, -suffix.length);
-  return root && paths.library === `${root}/Plugin Library` ? root : null;
-}
 export interface LegacyLocation { root: string; baseOverride: string; libraryOverride: string }
 export interface MoveStep { from: string; to: string; kind: 'file' | 'folder' }
-export function legacyLocations(s: LegacyLocation): Location {
+export function legacyLocations(s: LegacyLocation): Paths {
   return { base: s.baseOverride || `${s.root}/Plugin Inventory.base`, library: s.libraryOverride || `${s.root}/Library` };
 }
 export const TEMPLATE = '## Configuration\n\n| Setting | Desired Value | Steps | Verification | Reason | Notes |\n|---|---|---|---|---|---|\n| | | | | | |\n';
@@ -45,7 +33,7 @@ export function cleanPath(value: string): string {
   }
   return p;
 }
-export function locations(s: Location, configDir = '.obsidian'): Paths {
+export function locations(s: Paths, configDir = '.obsidian'): Paths {
   const base = cleanPath(s.base);
   const library = cleanPath(s.library);
   for (const p of [base, library]) {
@@ -55,19 +43,22 @@ export function locations(s: Location, configDir = '.obsidian'): Paths {
   if (base === library || inFolder(library, base)) throw new Error('The Base file cannot be the notes folder or its parent.');
   return { base, library };
 }
-export function movePlan(from: Paths, to: Paths): MoveStep[] {
-  const folderMoved = from.library !== to.library;
-  if (folderMoved && (inFolder(from.library, to.library) || inFolder(to.library, from.library))) throw new Error('The old and new notes folders cannot overlap.');
-  if (folderMoved && (to.base === from.library || inFolder(to.base, from.library))) throw new Error('The new Base cannot be inside the old notes folder.');
-  const steps: MoveStep[] = [];
-  let base = from.base;
-  if (folderMoved) {
-    steps.push({ from: from.library, to: to.library, kind: 'folder' });
-    if (inFolder(base, from.library)) base = to.library + base.slice(from.library.length);
+export const LIBRARY_NAME = 'Plugin Library';
+export const INDEX_NAME = 'Plugin Index.base';
+
+export function inventoryPath(value: string, configDir: string): string {
+  const path = cleanPath(value);
+  if ([configDir.toLowerCase(), '.trash'].some(dir => path.toLowerCase() === dir || inFolder(path.toLowerCase(), dir))) {
+    throw new Error('Choose a location outside the Obsidian configuration and trash folders.');
   }
-  if (base !== to.base) steps.push({ from: base, to: to.base, kind: 'file' });
-  return steps;
+  return path;
 }
+
+export function defaultInventoryPaths(root: string, configDir: string) {
+  const prefix = root.trim() === '' ? '' : inventoryPath(root, configDir) + '/';
+  return { library: prefix + LIBRARY_NAME, base: prefix + INDEX_NAME };
+}
+
 export function identity(data: any): Pick<RecordData, 'type' | 'plugin_id'> | null {
   if (!data || typeof data.plugin_id !== 'string' || !data.plugin_id) return null;
   const kind: Kind | null = data.type === 'core' || data.type === 'community' ? data.type
@@ -82,7 +73,7 @@ export function splitNote(text: string) {
   const data = doc.toJS();
   return { doc, data, body: text.slice(m[0].length), bom: m[1], eol: text.includes('\r\n') ? '\r\n' : '\n' };
 }
-export function newNote(record: RecordData, date: string, settings?: string, legacy = false): string {
+export function newNote(record: RecordData, date: string, settings?: string, legacy = false, template = TEMPLATE): string {
   const initial: Record<string, any> = {
     plugin_id: record.plugin_id,
     name: record.name,
@@ -99,7 +90,7 @@ export function newNote(record: RecordData, date: string, settings?: string, leg
     last_seen: date
   };
   if (settings !== undefined) initial.settings = settings;
-  return `---\n${stringify(initial)}---\n\n${TEMPLATE}`;
+  return `---\n${stringify(initial)}---\n\n${template}`;
 }
 export function updateNote(text: string, record: RecordData, date: string, settings?: string, legacy = false, confirmedOwner = false): string {
   const n = splitNote(text);
@@ -130,7 +121,7 @@ export function updateNote(text: string, record: RecordData, date: string, setti
   const yaml = n.doc.toString({ lineWidth: 0 }).replace(/\r?\n/g, n.eol);
   return `${n.bom}---${n.eol}${yaml}---${n.eol}${n.body}`;
 }
-export function filename(record: RecordData): string {
+export function filename(record: Pick<RecordData, 'name' | 'plugin_id'>): string {
   // eslint-disable-next-line no-control-regex -- stripping control characters is the point: they are invalid in filenames.
   return record.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '-').replace(/[. ]+$/, '').trim() || record.plugin_id.replace(/[^\w-]/g, '-');
 }
@@ -153,7 +144,7 @@ export function settingsLink(vault: string, tabIds: string[], record: Pick<Recor
 export function settingsFormula(vault: string, tabIds: string[], available: boolean, legacy = false): string {
   if (!available) return '""';
   const safeTabs = tabIds.filter(x => /^[a-zA-Z0-9_-]+$/.test(x));
-  const isCore = legacy ? 'type == "core"' : 'source == "Built-in"';
+  const isCore = legacy ? 'type == "core"' : '(source == "Built-in" || type == "core")';
   const target = `if(status == "enabled" && ${JSON.stringify(safeTabs)}.contains(plugin_id), plugin_id, if(${isCore}, "core-plugins", "community-plugins"))`;
   return `link(${JSON.stringify(`obsidian://adv-uri?vault=${encodeURIComponent(vault)}&settingid=`)} + ${target}, "⚙ Settings")`;
 }
@@ -164,7 +155,7 @@ export function makeBase(library: string, formula: string): string {
     'formula.Settings', 'note.last_seen'
   ];
   return stringify({
-    filters: { and: ['file.ext == "md"', folderClause(library), 'plugin_id != null && plugin_id != "" && (source == "Built-in" || source == "Community" || source == "Non-community")'] },
+    filters: { and: ['file.ext == "md"', folderClause(library), 'plugin_id != null && plugin_id != "" && (source == "Built-in" || source == "Community" || source == "Non-community" || type == "core" || type == "community")'] },
     formulas: { Plugin: 'link(file.path, name)', Status: 'status', Settings: formula },
     properties: {
       'note.source': { displayName: 'Source' },
@@ -188,12 +179,18 @@ export function makeBase(library: string, formula: string): string {
   }, { lineWidth: 0 });
 }
 /** Patch only a known managed scope and an unchanged managed formula. */
-export function patchBase(text: string, oldLibrary: string, library: string, oldFormula: string, formula: string): string {
+export function patchBase(text: string, oldLibrary: string, library: string, oldFormula: string, formula: string, recoverAppliedScope = false): string {
   const doc = parseDocument(text);
   if (doc.errors.length || !isMap(doc.contents)) throw new Error('Invalid Base YAML');
   const and = doc.getIn(['filters', 'and'], true);
   if (!isSeq(and)) throw new Error('Managed Base scope was changed; automatic repair stopped');
-  const matches = and.items.map((n, i) => String(n) === folderClause(oldLibrary) ? i : -1).filter(i => i >= 0);
+  const filters = and.items.map(String);
+  const matches = filters.flatMap((filter, i) => filter === folderClause(oldLibrary) ? [i] : []);
+  if (oldLibrary !== library && recoverAppliedScope) {
+    const targets = filters.filter(filter => filter === folderClause(library));
+    if (targets.length === 1 && matches.length === 0) return text;
+    if (targets.length) throw new Error('Managed Base scope was changed; automatic repair stopped');
+  }
   if (matches.length !== 1) throw new Error('Managed Base scope was changed; automatic repair stopped');
   let changed = false;
   if (oldLibrary !== library) { and.set(matches[0], folderClause(library)); changed = true; }

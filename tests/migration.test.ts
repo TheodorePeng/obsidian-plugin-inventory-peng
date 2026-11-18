@@ -7,6 +7,9 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type InventoryPlugin from '../src/main';
+import type { Snapshot } from '../src/compat';
+import type { RecordData } from '../src/core';
 
 const bundle = await build({ entryPoints: ['tests/fixtures/harness.ts'], bundle: true, platform: 'node', format: 'cjs', write: false, alias: { obsidian: resolve('tests/fixtures/obsidian-stub.ts') } });
 const tempDir = await mkdtemp(join(tmpdir(), 'inventory-migration-test-'));
@@ -26,32 +29,29 @@ function fixture(nested = false) {
   file(base, api.makeBase('Old/Library', '""')); file('Old/Library/a.md', 'user text');
   const vault = {
     configDir: '.obsidian', getAbstractFileByPath: (p: string) => files.get(p) ?? null,
-    adapter: { exists: async (p: string) => content.has(p) || files.has(p), read: async (p: string) => content.get(p) ?? '', write: async (p: string, v: string) => { content.set(p, v); } },
+    adapter: { mkdir: async (p: string) => { folder(p); }, exists: async (p: string) => content.has(p) || files.has(p), read: async (p: string) => content.get(p) ?? '', write: async (p: string, v: string) => { content.set(p, v); } },
     getAllLoadedFiles: () => [...files.values()], getMarkdownFiles: () => [...files.values()].filter(f => f instanceof api.TFile && f.path.endsWith('.md')),
     read: async (f: any) => content.get(f.path) ?? '',
     process: async (f: any, transform: (text: string) => string) => { content.set(f.path, transform(content.get(f.path) ?? '')); },
     create: async (p: string, text: string) => { if (files.has(p)) throw new Error('Destination exists'); return file(p, text); },
     createFolder: async (p: string) => { folder(p); }
   };
-  let failAfterMove = false;
   const app = { vault, workspace: { getLeavesOfType: () => [] }, fileManager: { renameFile: async (item: any, to: string) => {
     const from = item.path;
     for (const [old, obj] of [...files]) if (old === from || old.startsWith(`${from}/`)) {
       const next = to + old.slice(from.length); files.delete(old); obj.path = next; files.set(next, obj);
       if (content.has(old)) { content.set(next, content.get(old)!); content.delete(old); }
     }
-    if (failAfterMove) { failAfterMove = false; failSave = true; }
   } } };
   Object.assign(vault, { rename: app.fileManager.renameFile });
-  let saved: any; let failSave = false;
+  let saved: any;
   const makePlugin = () => {
     const plugin: any = new api.InventoryPlugin(app);
     plugin.settings = { schemaVersion: 2, base, library: 'Old/Library', initialized: true, vault: 'test', known: { x: { path: 'Old/Library/a.md', home: 'Old/Library/a.md', record: {} } }, excluded: ['retained'], binding: { library: 'Old/Library', formula: '""' }, migration: null };
-    plugin.saveData = async (value: any) => { if (failSave) { failSave = false; throw new Error('simulated save failure'); } saved = structuredClone(value); };
-    plugin.sync = async () => {}; plugin.updatePolling = () => {};
+    plugin.saveData = async (value: any) => { saved = structuredClone(value); };
     return plugin;
   };
-  return { files, content, file, folder, app, makePlugin, getSaved: () => structuredClone(saved), failAfterNextMove: () => { failAfterMove = true; } };
+  return { files, content, file, folder, app, makePlugin, getSaved: () => structuredClone(saved) };
 }
 
 function oldSourceFixture() {
@@ -67,37 +67,24 @@ function oldSourceFixture() {
   return { ...f, p, old, base };
 }
 
-test('moves the folder and nested Base, preserving content and binding', async () => {
-  const f = fixture(true); const p = f.makePlugin();
-  await p.startMigration({ base: 'New/in.base', library: 'New/Library' });
+test('legacy recovery verifies an interrupted move and completes without generating notes', async () => {
+  const f = fixture(); const p = f.makePlugin();
+  const from = p.paths();
+  const to = { base: 'New/in.base', library: 'New/Library' };
+  p.settings.migration = {
+    from, to, steps: [{ from: from.library, to: to.library, kind: 'folder' }, { from: from.base, to: to.base, kind: 'file' }],
+    next: 0, inFlight: true, committed: false, fingerprint: await p.fingerprint(from.library)
+  };
+  await f.app.fileManager.renameFile(f.files.get(from.library), to.library);
+  await assert.rejects(p.recoverMigration(), /cannot be verified/);
+  assert.ok(p.settings.migration);
+  await f.app.fileManager.renameFile(f.files.get(to.library), from.library);
+  await p.recoverMigration();
   assert.equal(f.content.get('New/Library/a.md'), 'user text');
-  assert.ok(f.content.get('New/in.base')?.includes('New/Library'));
+  assert.match(f.content.get('New/in.base')!, /New\/Library/);
   assert.equal(p.settings.known.x.path, 'New/Library/a.md');
   assert.deepEqual(p.settings.excluded, ['retained']);
   assert.equal(p.settings.migration, null);
-  assert.equal(f.getSaved().base, 'New/in.base');
-});
-
-test('existing destinations and altered managed filters stop before any move', async () => {
-  const f = fixture(); const p = f.makePlugin(); f.folder('New'); f.folder('New/Library');
-  await assert.rejects(p.startMigration({ base: 'New/in.base', library: 'New/Library' }), /already exists/);
-  assert.ok(f.files.has('Old/Library/a.md'));
-  f.files.delete('New/Library'); f.content.set('Old/in.base', 'filters: {}\nviews: []\n');
-  await assert.rejects(p.startMigration({ base: 'New/in.base', library: 'New/Library' }), /scope/);
-  assert.ok(f.files.has('Old/Library/a.md'));
-});
-
-test('interrupted move remains paused until the original source is restored', async () => {
-  const f = fixture(); const p = f.makePlugin(); f.failAfterNextMove();
-  await assert.rejects(p.startMigration({ base: 'New/in.base', library: 'New/Library' }), /simulated/);
-  const saved = f.getSaved(); assert.equal(saved.migration.inFlight, true);
-  const resumed = f.makePlugin(); resumed.settings = saved;
-  await assert.rejects(resumed.recoverMigration(), /cannot be verified/);
-  assert.ok(resumed.settings.migration); assert.ok(f.files.has('New/Library/a.md'));
-  await f.app.fileManager.renameFile(f.files.get('New/Library'), 'Old/Library');
-  await resumed.recoverMigration();
-  assert.equal(resumed.settings.migration, null);
-  assert.equal(f.content.get('New/Library/a.md'), 'user text');
 });
 
 test('source upgrade backs up and preserves user content', async () => {
@@ -177,18 +164,6 @@ test('offline registry preserves the previous cache and marks failed refresh', a
   assert.match(f.p.registryStatus(), /not verified/);
 });
 
-test('sync restores a removed Source only for the known note identity', async () => {
-  const f = fixture(); const p = f.makePlugin(); delete p.sync;
-  const record = { plugin_id: 'abc', name: 'ABC', type: 'community', source: 'Community', status: 'enabled', version: '1' };
-  f.content.set('Old/Library/a.md', '---\nplugin_id: abc\nname: ABC\ncustom: keep\n---\n\nMy body\n');
-  p.settings.sourceVersion = 1; p.settings.registry = { ids: ['abc'], fetchedAt: Date.now(), attemptedAt: Date.now() };
-  p.settings.known = { 'community:abc': { path: 'Old/Library/a.md', home: 'Old/Library/a.md', record } };
-  p.scanner = { scan: async () => ({ records: new Map([['community:abc', record]]), complete: { core: true, community: true }, errors: [], settingsFormula: { vault: 'V', tabIds: [], available: false } }) };
-  await p.sync();
-  assert.match(f.content.get('Old/Library/a.md')!, /source: Community/);
-  assert.match(f.content.get('Old/Library/a.md')!, /custom: keep/);
-  assert.match(f.content.get('Old/Library/a.md')!, /My body/);
-});
 test('repair rebuilds a damaged Base, preserves tracked duplicate and quarantines the rest', async () => {
   const f = oldSourceFixture(); f.content.set('Old/in.base', 'broken: [');
   f.file('Old/Library/z.md', f.old + 'Tracked body');
@@ -228,44 +203,6 @@ test('repair can recreate a missing managed Base without replacing an existing d
   const preview = await f.p.previewSourceUpgrade(); assert.equal(preview.files.at(-1).create, true);
   await f.p.startSourceUpgrade(preview); assert.match(f.content.get('Old/in.base')!, /Last Detected/);
 });
-test('root mode survives a persisted interrupted path move', async () => {
-  const f = fixture(); const p = f.makePlugin(); f.failAfterNextMove();
-  const target = { base: 'New/Plugin Inventory.base', library: 'New/Plugin Library' };
-  await assert.rejects(p.startMigration(target, { mode: 'root', root: 'New' }), /simulated/);
-  const resumed = f.makePlugin(); resumed.settings = f.getSaved();
-  assert.deepEqual(resumed.settings.migration.storage, { mode: 'root', root: 'New' });
-  await f.app.fileManager.renameFile(f.files.get(target.library), 'Old/Library');
-  await resumed.recoverMigration();
-  assert.deepEqual(resumed.settings.storage, { mode: 'root', root: 'New' });
-});
-test('mode changes with unchanged paths persist without moving files', async () => {
-  const f = fixture(); const p = f.makePlugin();
-  p.settings.base = 'Root/Plugin Inventory.base'; p.settings.library = 'Root/Plugin Library';
-  f.folder('Root'); f.folder(p.settings.library); f.file(p.settings.base, api.makeBase(p.settings.library, '""'));
-  await p.initialize(p.paths(), { mode: 'root', root: 'Root' });
-  assert.equal(p.settings.storage.mode, 'root');
-  await p.initialize(p.paths(), { mode: 'independent', root: 'Root' });
-  assert.equal(p.settings.storage.mode, 'independent');
-  assert.ok(f.files.has('Root/Plugin Inventory.base'));
-  await assert.rejects(p.initialize(p.paths(), { mode: 'root', root: 'Wrong' }), /do not match/);
-});
-test('first creation uses the root layout and persists its mode', async () => {
-  const f = fixture(); const p = f.makePlugin(); p.settings.initialized = false;
-  p.scanner = { scan: async () => ({ records: new Map(), complete: { core: true, community: true }, errors: [], basesEnabled: true, settingsFormula: { vault: 'V', tabIds: [], available: false } }) };
-  await p.initialize({ base: 'Fresh/Plugin Inventory.base', library: 'Fresh/Plugin Library' }, { mode: 'root', root: 'Fresh' });
-  assert.ok(f.files.has('Fresh/Plugin Inventory.base')); assert.ok(f.files.has('Fresh/Plugin Library'));
-  assert.deepEqual(f.getSaved().storage, { mode: 'root', root: 'Fresh' });
-});
-test('file explorer moves retain root mode only while the fixed layout remains valid', async () => {
-  const f = fixture(); const p = f.makePlugin();
-  p.settings.base = 'Root/Plugin Inventory.base'; p.settings.library = 'Root/Plugin Library'; p.settings.storage = { mode: 'root', root: 'Root' };
-  f.folder('Root'); f.folder(p.settings.library); f.file(p.settings.base, api.makeBase(p.settings.library, '""'));
-  await f.app.fileManager.renameFile(f.files.get('Root'), 'Moved'); await p.trackRename('Root', 'Moved');
-  assert.deepEqual(p.settings.storage, { mode: 'root', root: 'Moved' });
-  await f.app.fileManager.renameFile(f.files.get(p.settings.base), 'Moved/custom.base'); await p.trackRename('Moved/Plugin Inventory.base', 'Moved/custom.base');
-  assert.equal(p.settings.storage.mode, 'independent');
-});
-
 test('changed notes can resume through a fresh approved plan without restoring old text', async () => {
   const f = oldSourceFixture(); const process = f.app.vault.process;
   f.app.vault.process = async () => { throw new Error('interrupted'); };
@@ -331,3 +268,223 @@ test('replacement journal save failure retains the previous recovery state', asy
   assert.equal(f.content.get('Old/Library/a.md'), f.old);
 });
 /* eslint-enable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- end of dynamic test double. */
+
+const currentRecord: RecordData = { type: 'community', plugin_id: 'abc', name: 'ABC', status: 'enabled', version: '1', source: 'Community' };
+type InventoryState = InventoryPlugin['settings'];
+type ModernFixturePlugin =
+  Omit<InventoryPlugin, 'scanner' | 'loadData' | 'saveData' | 'addCommand' | 'addSettingTab' | 'addRibbonIcon' | 'registerEvent' | 'register'> & {
+    scanner: { scan: (includeCore?: boolean, legacy?: boolean, registry?: ReadonlySet<string> | null, includeDisabledCore?: boolean) => Promise<Snapshot> };
+    followRename: (from: string, to: string) => Promise<void>;
+    loadData: () => Promise<InventoryState>;
+    addCommand: (command: { id: string; name: string }) => void;
+    addSettingTab: () => void;
+    addRibbonIcon: () => void;
+    registerEvent: () => void;
+    register: () => void;
+  };
+function currentFixture() {
+  const f = fixture();
+  const p = f.makePlugin() as ModernFixturePlugin;
+  p.settings.base = 'Old/in.base';
+  p.settings.noteTemplate = '## 自定义\n\n';
+  p.settings.binding = { library: 'Old/Library', formula: '""' };
+  p.scanner = { scan: async () => ({ records: new Map([['community:abc', currentRecord]]), complete: { core: true, community: true }, errors: [], basesEnabled: false, settingsFormula: { vault: 'test', tabIds: [], available: false } }) };
+  return { ...f, p, getSaved: () => f.getSaved() as InventoryState | undefined };
+}
+
+test('fills a deleted Library without a Base and uses the saved template once', async () => {
+  const f = currentFixture();
+  f.files.delete('Old/Library'); f.files.delete('Old/in.base');
+  f.files.delete('Old/Library/a.md');
+  f.file('Archive/ABC.md', 'Unrelated original outside active Library');
+  const plan = await f.p.previewFill();
+  assert.deepEqual(plan.entries.map((entry: { path: string }) => entry.path), ['Old/Library/ABC.md']);
+  assert.equal(f.files.has('Old/Library'), false);
+  await f.p.applyFill(plan);
+  assert.match(f.content.get('Old/Library/ABC.md')!, /## 自定义\n\n$/);
+  assert.equal(f.content.get('Archive/ABC.md'), 'Unrelated original outside active Library');
+  assert.equal(f.files.has('Old/in.base'), false);
+  assert.equal((await f.p.previewFill()).entries.length, 0);
+});
+
+test('creation can be repeated with new default paths and the prior Library is untouched', async () => {
+  const f = currentFixture();
+  const plan = await f.p.previewCreate('New');
+  await f.p.applyCreate(plan);
+  assert.equal(f.p.settings.library, 'New/Plugin Library');
+  assert.equal(f.p.settings.base, 'New/Plugin Index.base');
+  assert.match(f.content.get('New/Plugin Library/ABC.md')!, /## 自定义\n\n$/);
+  assert.equal(f.content.get('Old/Library/a.md'), 'user text');
+  await assert.rejects(f.p.previewCreate('New'), /already exists/);
+});
+
+test('relocation preserves custom Index views without creating missing notes', async () => {
+  const f = currentFixture();
+  f.folder('Moved'); f.file('Moved/Personal.md', 'Personal');
+  f.content.set('Old/in.base', f.content.get('Old/in.base')!.replace('All Plugins', 'My custom view'));
+  await f.p.applyLocate(await f.p.previewLocate('Moved'));
+  assert.equal(f.p.settings.library, 'Moved');
+  assert.match(f.content.get('Old/in.base')!, /My custom view/);
+  assert.match(f.content.get('Old/in.base')!, /file\.inFolder\("Moved"\)/);
+  assert.equal(f.files.has('Moved/ABC.md'), false);
+});
+
+test('Index takeover rejects stale previews and backs up existing Base before replacement', async () => {
+  const f = currentFixture();
+  f.file('Custom.base', 'views: []\n');
+  const plan = await f.p.previewIndex('Custom.base');
+  f.content.set('Custom.base', 'views: [] # edited\n');
+  await assert.rejects(f.p.applyIndex(plan), /changed/i);
+  assert.equal(f.p.settings.base, 'Old/in.base');
+  await f.p.applyIndex(await f.p.previewIndex('Custom.base'));
+  assert.equal(f.p.settings.base, 'Custom.base');
+  assert.match(f.content.get('Custom.base')!, /file\.inFolder\("Old\/Library"\)/);
+  assert.ok([...f.content].some(([path, text]) => path.includes('/inventory-backups/') && text === 'views: [] # edited\n'));
+});
+
+test('an explicitly saved empty template persists without falling back to default', async () => {
+  const f = currentFixture();
+  await f.p.saveTemplate('');
+  assert.equal(f.getSaved()?.noteTemplate, '');
+  await f.p.applyFill(await f.p.previewFill());
+  assert.match(f.content.get('Old/Library/ABC.md')!, /---\n\n$/);
+  assert.doesNotMatch(f.content.get('Old/Library/ABC.md')!, /Configuration/);
+  assert.equal(f.content.get('Old/Library/a.md'), 'user text');
+});
+
+const modernRecord = (id: string, name: string): RecordData => ({ ...currentRecord, plugin_id: id, name });
+const installedNote = (id: string, body: string) => `---\nplugin_id: ${id}\nsource: Community\nstatus: disabled\ncustom: keep\n---\n\n${body}`;
+
+test('refresh updates only unambiguous notes and does not edit the Index or create notes', async () => {
+  const f = currentFixture();
+  f.p.settings.registry = { ids: ['abc'], fetchedAt: Date.now(), attemptedAt: Date.now() };
+  f.content.set('Old/Library/a.md', installedNote('abc', '既有正文'));
+  const originalBase = f.content.get('Old/in.base');
+  f.p.scanner = { scan: async () => ({
+    records: new Map([['community:abc', currentRecord], ['community:new', modernRecord('new', 'New Plugin')]]),
+    complete: { core: true, community: true }, errors: [], basesEnabled: false, settingsFormula: { vault: 'test', tabIds: [], available: false }
+  }) };
+  await f.p.refreshNotes();
+  assert.match(f.content.get('Old/Library/a.md')!, /status: enabled\ncustom: keep/);
+  assert.match(f.content.get('Old/Library/a.md')!, /既有正文$/);
+  assert.equal(f.content.get('Old/in.base'), originalBase);
+  assert.equal(f.files.has('Old/Library/New Plugin.md'), false);
+  assert.match(f.p.summary, /1 missing/);
+});
+
+test('fill reports malformed and duplicate identities and skips excluded records', async () => {
+  const f = currentFixture();
+  f.file('Old/Library/ABC.md', '# Unrelated note');
+  f.file('Old/Library/bad.md', '---\nplugin_id: bad\nsource: [\n---\n');
+  f.file('Old/Library/dup1.md', installedNote('dup', 'first'));
+  f.file('Old/Library/dup2.md', installedNote('dup', 'second'));
+  f.p.settings.excluded = ['community:hidden'];
+  f.p.scanner = { scan: async () => ({
+    records: new Map([['community:abc', currentRecord], ['community:bad', modernRecord('bad', 'Bad')],
+      ['community:dup', modernRecord('dup', 'Dup')], ['community:hidden', modernRecord('hidden', 'Hidden')]]),
+    complete: { core: true, community: true }, errors: [], basesEnabled: false, settingsFormula: { vault: 'test', tabIds: [], available: false }
+  }) };
+  const plan = await f.p.previewFill();
+  assert.deepEqual(plan.entries.map((e: { path: string }) => e.path), ['Old/Library/ABC (community-abc).md']);
+  assert.match(plan.issues.join('\n'), /bad\.md[\s\S]+Duplicate identity community:dup/);
+  await f.p.applyFill(plan);
+  assert.equal(f.content.get('Old/Library/ABC.md'), '# Unrelated note');
+  assert.equal((await f.p.previewFill()).entries.length, 0);
+});
+
+test('fill blocks incomplete plugin scans and stale confirmations', async () => {
+  const f = currentFixture();
+  const plan = await f.p.previewFill();
+  f.file('Old/Library/already-present.md', installedNote('abc', 'Saved after preview'));
+  await assert.rejects(f.p.applyFill(plan), /changed since the preview/);
+  const scan = f.p.scanner.scan;
+  f.p.scanner.scan = async () => ({ ...await scan(), complete: { core: true, community: false }, errors: ['Broken manifest: bad-plugin'] });
+  await assert.rejects(f.p.previewFill(), /Broken manifest/);
+  assert.equal(f.files.has('Old/Library/ABC.md'), false);
+});
+
+test('follow rename updates Library and Index paths but ignores unrelated renames', async () => {
+  const f = currentFixture();
+  await f.p.followRename('Unrelated', 'Renamed');
+  assert.equal(f.getSaved(), undefined);
+  await f.app.fileManager.renameFile(f.files.get('Old'), 'New');
+  await f.p.followRename('Old', 'New');
+  assert.equal(f.p.settings.library, 'New/Library');
+  assert.equal(f.p.settings.base, 'New/in.base');
+  assert.match(f.content.get('New/in.base')!, /file\.inFolder\("New\/Library"\)/);
+  assert.equal(f.content.get('New/Library/a.md'), 'user text');
+});
+
+test('import only replaces an explicitly selected note and keeps a backup and the original', async () => {
+  const f = currentFixture();
+  const before = installedNote('abc', 'Latest user edits');
+  const old = installedNote('abc', 'Archived user settings');
+  f.content.set('Old/Library/a.md', before);
+  f.folder('Archive'); f.file('Archive/Original.md', old);
+  const plan = await f.p.previewImport('Archive');
+  assert.equal(plan.groups[0].targets[0].path, 'Old/Library/a.md');
+  await f.p.applyImport(plan, []);
+  assert.equal(f.content.get('Old/Library/a.md'), before);
+  await f.p.applyImport(plan, [{ key: 'community:abc', source: 'Archive/Original.md', target: 'Old/Library/a.md' }]);
+  assert.equal(f.content.get('Old/Library/a.md'), old);
+  assert.equal(f.content.get('Archive/Original.md'), old);
+  assert.ok([...f.content].some(([path, text]) => path.includes('/inventory-backups/') && text === before));
+});
+
+test('v2 load preserves configured paths without saving data or scanning, and registers English commands', async () => {
+  const f = currentFixture();
+  const original = structuredClone(f.p.settings);
+  const commands = new Map<string, string>();
+  f.p.loadData = async () => original;
+  Object.assign(f.app.vault, { getName: () => 'test', on: () => ({}) });
+  f.p.addCommand = (command: { id: string; name: string }) => { commands.set(command.id, command.name); };
+  f.p.addSettingTab = () => {}; f.p.addRibbonIcon = () => {}; f.p.registerEvent = () => {}; f.p.register = () => {};
+  await f.p.onload();
+  assert.equal(f.p.settings.schemaVersion, 3);
+  assert.equal(f.p.settings.library, original.library);
+  assert.equal(f.p.settings.base, original.base);
+  assert.equal('initialized' in f.p.settings, false);
+  assert.equal(f.getSaved(), undefined);
+  assert.deepEqual([...commands.values()], [
+    'Create Plugin Inventory', 'Open Plugin Index', 'Refresh Plugin Status', 'Fill Missing Plugin Notes',
+    'Locate Plugin Library', 'Set Plugin Index', 'Import Plugin Notes', 'Manage Excluded Plugins', 'Reset Plugin Index'
+  ]);
+});
+
+test('quick creation refuses a Library inserted while the preview is scanning', async () => {
+  const f = currentFixture();
+  const scan = f.p.scanner.scan;
+  f.p.scanner.scan = async () => {
+    const result = await scan();
+    f.folder('New/Plugin Library');
+    return result;
+  };
+  await assert.rejects(f.p.previewCreate('New'), /destination changed/i);
+  assert.equal(f.files.has('New/Plugin Library/ABC.md'), false);
+});
+
+test('core refresh can detect a formerly enabled feature that is now disabled', async () => {
+  const f = currentFixture();
+  f.p.settings.sourceVersion = 1;
+  f.p.settings.registry = { ids: [], fetchedAt: Date.now(), attemptedAt: Date.now() };
+  f.p.settings.includeCore = true;
+  f.content.set('Old/Library/a.md', '---\nplugin_id: canvas\nsource: Built-in\nstatus: enabled\n---\n\nBody');
+  f.p.scanner.scan = async (_include, _legacy, _catalog, includeDisabled) => ({
+    records: new Map(includeDisabled ? [['core:canvas', { type: 'core', plugin_id: 'canvas', name: 'Canvas', source: 'Built-in', status: 'disabled', version: '' }]] : []),
+    complete: { core: true, community: true }, errors: [], basesEnabled: false, settingsFormula: { vault: 'test', tabIds: [], available: false }
+  });
+  await f.p.refreshNotes();
+  assert.match(f.content.get('Old/Library/a.md')!, /status: disabled/);
+});
+
+test('relocation leaves an ambiguous Index unchanged while committing the Library path', async () => {
+  const f = currentFixture();
+  f.folder('New');
+  const ambiguous = 'filters:\n  and:\n    - \'file.inFolder("Old/Library")\'\n    - \'file.inFolder("New")\'\nviews: []\n';
+  f.content.set('Old/in.base', ambiguous);
+  await f.p.applyLocate(await f.p.previewLocate('New'));
+  assert.equal(f.p.settings.library, 'New');
+  assert.equal(f.content.get('Old/in.base'), ambiguous);
+  assert.match(await f.p.indexWarning(), /Repair Index Filter/);
+  assert.match(f.p.errors.join('\n'), /scope was changed/);
+});

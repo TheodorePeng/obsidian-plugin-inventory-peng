@@ -105,3 +105,10 @@
 - 本轮将此前各节所述的设置页与路径迁移重构、Source 合并与官方社区插件目录、受管属性接管、根目录／独立路径互斥保存模式、升级中断恢复，连同扩展的自动化测试与样式刷新，一并整理为 0.1.2 的发布内容。
 - 发布流程：preflight → bump-versions → lint / test / typecheck / build / git diff --check → 提交 → 推送 main → 推送 tag 0.1.2 → gh release create（资产 main.js / manifest.json / styles.css）→ verify → registry-update → 同步测试 Vault。
 - 以上各节中「未提交、推送或发布」等表述仅作为历史记录保留，不代表本版本发布后的工作区状态。
+
+## 2026-11-18：Library、Index 与模板重构
+
+- 真实 Obsidian 渲染器中以独立插件实例加载本地构建。对测试 Vault 的现有配置仅执行预览。报告 Library 缺失、计划创建 118 条笔记。未确认写入原清单。
+- 隔离实例使用两条测试记录、内存设置和插件专用测试目录。设置页默认显示 Configuration 模板。通过 DOM 输入和按钮操作保存双语 Markdown；重建设置页后值一致。
+- 通过注册命令回调进入补齐预览，确认后同时缺失的 Library 和 Index 场景成功生成两篇笔记，两篇均使用已保存模板。随后通过设置页重复打开补齐预览，新增为零。独立创建的 Base 文件包含正确的 Library 筛选。
+- 测试文件已清理。未安装或替换 Vault 内运行产物。设置持久性和 Base 接管备份由自动化测试覆盖；本轮未执行真实系统输入法或手动键盘验收。

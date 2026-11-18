@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseDocument } from 'yaml';
-import { legacyLocations, locations, movePlan, makeBase, newNote, patchBase, settingsFormula, settingsLink, settingsTarget, settingsUrl, splitNote, updateNote, type RecordData } from '../src/core';
+import { legacyLocations, locations, makeBase, newNote, patchBase, settingsFormula, settingsLink, settingsTarget, settingsUrl, splitNote, updateNote, type RecordData } from '../src/core';
 
 const record: RecordData = { plugin_id: 'example', name: 'Example', type: 'community', source: 'Community', status: 'enabled', version: '1.0.0' };
 test('refresh preserves authored properties, comments and mixed-language body', () => {
@@ -39,12 +39,6 @@ test('default and independent paths are scoped to the vault', () => {
   assert.throws(() => locations({ ...s, base: 'Plugins/bad:name.base' }));
   assert.throws(() => locations({ ...s, base: 'Plugins/x.md' }));
   assert.throws(() => locations({ base: 'Plugins/x.base', library: 'Plugins/x.base/sub' }));
-});
-test('move plans preserve nested Base and reject overlapping folders', () => {
-  assert.deepEqual(movePlan({ base: 'Old/Library/in.base', library: 'Old/Library' }, { base: 'New/Library/in.base', library: 'New/Library' }), [{ from: 'Old/Library', to: 'New/Library', kind: 'folder' }]);
-  assert.deepEqual(movePlan({ base: 'Old/Library/in.base', library: 'Old/Library' }, { base: 'New/out.base', library: 'New/Library' }), [{ from: 'Old/Library', to: 'New/Library', kind: 'folder' }, { from: 'New/Library/in.base', to: 'New/out.base', kind: 'file' }]);
-  assert.throws(() => movePlan({ base: 'x.base', library: 'Old' }, { base: 'x.base', library: 'Old/New' }));
-  assert.throws(() => movePlan({ base: 'x.base', library: 'Old' }, { base: 'Old/new.base', library: 'New' }));
 });
 test('Base scope changes preserve user views and reject unknown scope', () => {
   const original = makeBase('Plugins/Library', '""');
@@ -88,7 +82,7 @@ test('settings target mirrors the Base formula decision table', () => {
   assert.equal(settingsTarget({ ...base, type: 'core', status: 'disabled' }, tabs), 'core-plugins');
   // The formula must encode the same table: changing one side alone turns this red.
   const formula = settingsFormula('My Vault', tabs, true);
-  assert.ok(formula.includes('if(status == "enabled" && ["alpha","beta"].contains(plugin_id), plugin_id, if(source == "Built-in", "core-plugins", "community-plugins"))'));
+  assert.ok(formula.includes('if(status == "enabled" && ["alpha","beta"].contains(plugin_id), plugin_id, if((source == "Built-in" || type == "core"), "core-plugins", "community-plugins"))'));
   assert.equal(settingsUrl('My Vault', 'alpha'), 'obsidian://adv-uri?vault=My%20Vault&settingid=alpha');
 });
 test('new note carries a clickable settings property', () => {

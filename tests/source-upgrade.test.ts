@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { parseDocument } from 'yaml';
 import { inspectRepairNote, repairNote } from '../src/repair';
 import { classify, parseRegistry, registryDue } from '../src/registry';
-import { inferStorageRoot, rootLocations, type RecordData } from '../src/core';
+import { defaultInventoryPaths, legacyLocations, type RecordData } from '../src/core';
 
 const record: RecordData = { plugin_id: 'abc', name: 'ABC', type: 'community', source: 'Community', status: 'enabled', version: '2' };
 test('repair forces managed fields, keeps custom data and exact body', () => {
@@ -26,13 +26,14 @@ test('conflicting custom properties and damaged YAML remain untouched', () => {
 test('unknown identity is not inferred from a filename or conflicting duplicate IDs', () => {
   assert.equal(inspectRepairNote('---\nplugin_id: abc\nplugin_id: different\n---\nbody').uniqueId, null);
 });
-test('root layout has fixed names and does not infer old Library paths', () => {
-  assert.deepEqual(rootLocations('My Plugins'), { base: 'My Plugins/Plugin Inventory.base', library: 'My Plugins/Plugin Library' });
-  assert.equal(inferStorageRoot(rootLocations('My Plugins')), 'My Plugins');
-  assert.equal(inferStorageRoot({ base: 'Plugins/Plugin Inventory.base', library: 'Plugins/Library' }), null);
-  assert.throws(() => rootLocations('.obsidian/plugins'));
-  assert.throws(() => rootLocations('../escape'));
+test('new default names are independent from the saved legacy path format', () => {
+  assert.deepEqual(defaultInventoryPaths('My Plugins', '.obsidian'), { base: 'My Plugins/Plugin Index.base', library: 'My Plugins/Plugin Library' });
+  assert.deepEqual(defaultInventoryPaths('', '.obsidian'), { base: 'Plugin Index.base', library: 'Plugin Library' });
+  assert.deepEqual(legacyLocations({ root: 'Plugins', baseOverride: '', libraryOverride: '' }), { base: 'Plugins/Plugin Inventory.base', library: 'Plugins/Library' });
+  assert.throws(() => defaultInventoryPaths('.obsidian/plugins', '.obsidian'));
+  assert.throws(() => defaultInventoryPaths('../escape', '.obsidian'));
 });
+
 test('directory verification classifies and rejects incomplete data', () => {
   const data = Array.from({ length: 100 }, (_, i) => ({ id: `p${i}` }));
   const ids = new Set(parseRegistry(JSON.stringify(data)));
