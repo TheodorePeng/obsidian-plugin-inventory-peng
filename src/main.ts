@@ -3,7 +3,7 @@ import {
   Plugin, TFile, TFolder, getLanguage, requestUrl
 } from 'obsidian';
 import {
-  TEMPLATE, defaultInventoryPaths, inventoryPath, identity, inFolder, keyOf, legacyLocations, locations, makeBase, newNote,
+  TEMPLATE, defaultInventoryPaths, inventoryPath, compatibleIndexFormula, identity, inFolder, keyOf, legacyLocations, locations, makeBase, newNote,
   patchBase, settingsFormula, settingsLink, splitNote, updateNote,
   type MoveStep, type Paths, type RecordData
 } from './core';
@@ -17,8 +17,20 @@ type Progress = (status: string) => void;
 interface PlannedNote { key: string; record: RecordData; path: string; settings?: string }
 export interface FillPlan { library: string; createFolder: boolean; entries: PlannedNote[]; issues: string[]; template: string; legacy: boolean }
 export interface CreatePlan { root: string; paths: Paths; notes: FillPlan; active: Paths; formula: string }
-export interface LocatePlan { path: string; previous: string; keys: string[]; issues: string[] }
 export interface IndexPlan { path: string; library: string; previous: string; before: string | null; formula: string }
+type IndexChange =
+  | { kind: 'keep'; scope?: { before: string; after: string; formula: string }; warning?: string; observed?: string }
+  | { kind: 'disconnect' }
+  | { kind: 'connect'; before: string; formula: string }
+  | { kind: 'create' | 'replace'; file: IndexPlan };
+
+export interface PathPlan {
+  previous: Paths;
+  paths: Paths;
+  library?: { keys: string[]; issues: string[] };
+  index: IndexChange;
+}
+
 interface ImportGroup { key: string; candidates: IndexedNote[]; targets: IndexedNote[]; newPath: string }
 export interface ImportPlan { source: string; library: string; groups: ImportGroup[]; issues: string[] }
 export interface ImportSelection { key: string; source: string; target: string }
@@ -97,7 +109,7 @@ export default class InventoryPlugin extends Plugin {
     this.register(() => { this.stopping = true; });
     const libraryState = pathState(this.app.vault, this.settings.library);
     this.summary = libraryState === 'Ready' ? 'Plugin Library is connected.'
-      : libraryState === 'Missing' ? 'Plugin Library is missing. Run Locate Plugin Library or Fill Missing Plugin Notes.'
+      : libraryState === 'Missing' ? 'Plugin Library is missing. Edit the Plugin Library path in Settings or run Fill Missing Plugin Notes.'
       : libraryState === 'Path conflict' ? 'A file occupies the Plugin Library path.'
       : 'Create a Plugin Inventory or locate an existing Library.';
   }
@@ -433,7 +445,7 @@ export default class InventoryPlugin extends Plugin {
 
   async previewFill(): Promise<FillPlan> {
     this.guardOperation();
-    if (!this.settings.library) throw new Error('Locate or create a Plugin Library first.');
+    if (!this.settings.library) throw new Error('Connect or create a Plugin Library in Settings first.');
     const library = inventoryPath(this.settings.library, this.app.vault.configDir);
     return this.planNotes(library, this.settings.sourceVersion === 0, await this.activeSnapshot());
   }
@@ -474,7 +486,7 @@ export default class InventoryPlugin extends Plugin {
     const paths = defaultInventoryPaths(root, this.app.vault.configDir);
     for (const path of [paths.library, paths.base]) {
       this.checkParents(path);
-      if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`Destination already exists: ${path}. Locate the existing Library, set the existing Index, or choose another folder.`);
+      if (this.app.vault.getAbstractFileByPath(path)) throw new Error(`Destination already exists: ${path}. Edit the inventory paths in Settings or choose another root folder.`);
     }
     const snapshot = await this.activeSnapshot(false);
     const notes = await this.planNotes(paths.library, false, snapshot);
@@ -493,40 +505,21 @@ export default class InventoryPlugin extends Plugin {
         report?.(`Creating ${paths.base}`);
         await this.app.vault.create(paths.base, makeBase(paths.library, formula));
       } catch (e) {
-        throw new Error(`${errorText(e)}\n${preview.notes.entries.length} notes were created in ${paths.library}. Locate that folder to use them.`);
+        throw new Error(`${errorText(e)}\n${preview.notes.entries.length} notes were created in ${paths.library}. Connect that folder in Settings to use them.`);
       }
       try {
         await this.changePreferences({ ...paths, binding: { library: paths.library, formula }, sourceVersion: 1 });
       } catch (e) {
-        throw new Error(`${errorText(e)}\nFiles created at ${paths.library} and ${paths.base}. Locate the Library and set the Index to use them.`);
+        throw new Error(`${errorText(e)}\nFiles created at ${paths.library} and ${paths.base}. Connect the Library and Index in Settings to use them.`);
       }
       this.errors = [];
       this.summary = `Created a Library with ${preview.notes.entries.length} plugin notes and an Index.`;
     });
   }
 
-  async previewLocate(value: string): Promise<LocatePlan> {
-    this.guardOperation();
-    const path = inventoryPath(value, this.app.vault.configDir);
-    if (pathState(this.app.vault, path) !== 'Ready') throw new Error(`Choose an existing Library folder: ${path}`);
-    const index = await indexLibrary(this.app.vault, path);
-    return { path, previous: this.settings.library, keys: [...index.notes.keys()], issues: index.issues };
-  }
-
-  applyLocate(approved: LocatePlan): Promise<void> {
-    return this.enqueue(async () => {
-      const fresh = await this.previewLocate(approved.path);
-      verifyPreview(approved, fresh);
-      await this.changePreferences({ library: fresh.path });
-      this.errors = [...fresh.issues];
-      this.summary = `Connected Plugin Library: ${fresh.path}.`;
-      await this.tryIndexFilter();
-    });
-  }
-
   async previewIndex(value: string): Promise<IndexPlan> {
     this.guardOperation();
-    if (!this.settings.library) throw new Error('Locate or create a Plugin Library first.');
+    if (!this.settings.library) throw new Error('Connect or create a Plugin Library in Settings first.');
     const { base: path, library } = locations({ base: inventoryPath(value, this.app.vault.configDir), library: inventoryPath(this.settings.library, this.app.vault.configDir) }, this.app.vault.configDir);
     this.checkParents(path);
     const file = this.app.vault.getAbstractFileByPath(path);
@@ -535,6 +528,99 @@ export default class InventoryPlugin extends Plugin {
     const snap = await this.activeSnapshot();
     const formula = this.formula(snap);
     return { path, library, previous: this.settings.base, before, formula };
+  }
+
+  async previewPathChanges(draft: Paths): Promise<PathPlan> {
+    this.guardOperation();
+    const previous = { library: this.settings.library, base: this.settings.base };
+    const config = this.app.vault.configDir;
+    const library = inventoryPath(draft.library, config);
+    const base = draft.base.trim() ? inventoryPath(draft.base, config) : '';
+    const paths = base ? locations({ library, base }, config) : { library, base };
+    const changedLibrary = library !== previous.library;
+    const changedIndex = base !== previous.base;
+    if (!changedLibrary && !changedIndex) throw new Error('There are no path changes.');
+    const plan: PathPlan = { previous, paths, index: { kind: 'keep' } };
+    if (changedLibrary) {
+      if (pathState(this.app.vault, library) !== 'Ready') throw new Error(`Choose an existing Library folder: ${library}`);
+      const current = await indexLibrary(this.app.vault, library);
+      plan.library = { keys: [...current.notes.keys()], issues: current.issues };
+    }
+
+    if (changedIndex) {
+      if (!base) { plan.index = { kind: 'disconnect' }; return plan; }
+      this.checkParents(base);
+      const file = this.app.vault.getAbstractFileByPath(base);
+      if (file && !(file instanceof TFile)) throw new Error(`Destination is not a Base file: ${base}`);
+      const before = file instanceof TFile ? await this.app.vault.read(file) : null;
+      const compatible = before === null ? null : compatibleIndexFormula(before, library);
+      if (before !== null && compatible !== null) {
+        plan.index = { kind: 'connect', before, formula: compatible };
+      } else {
+        const formula = this.formula(await this.activeSnapshot());
+        plan.index = { kind: before === null ? 'create' : 'replace', file: { path: base, library, previous: previous.base, before, formula } };
+      }
+    } else if (base) {
+      const file = this.app.vault.getAbstractFileByPath(base);
+      const binding = this.settings.binding;
+      if (!(file instanceof TFile)) {
+        plan.index = { kind: 'keep', warning: `The current Index needs attention: ${base}` };
+      } else {
+        const before = await this.app.vault.read(file);
+        try {
+          if (!binding) throw new Error('The Index filter is unrecognized.');
+          const after = patchBase(before, binding.library, library, binding.formula, binding.formula, true);
+          plan.index = { kind: 'keep', scope: { before, after, formula: binding.formula } };
+        } catch (e) {
+          plan.index = { kind: 'keep', observed: before, warning: `${base}: ${errorText(e)}` };
+        }
+      }
+    }
+    return plan;
+  }
+
+  applyPathChanges(approved: PathPlan, replaceExisting = false): Promise<void> {
+    return this.enqueue(async () => {
+      const active = { library: this.settings.library, base: this.settings.base };
+      verifyPreview(approved.previous, active);
+      const plan = await this.previewPathChanges(approved.paths);
+      verifyPreview(approved, plan);
+      const { paths, index } = plan;
+      let binding = this.settings.binding;
+      let backup = '';
+      let wroteIndex = false;
+      if (index.kind === 'disconnect') binding = null;
+      if (index.kind === 'connect') {
+        const file = this.app.vault.getAbstractFileByPath(paths.base);
+        if (!(file instanceof TFile) || await this.app.vault.read(file) !== index.before) throw new Error('Base file changed. Review it again.');
+        binding = { library: paths.library, formula: index.formula };
+      }
+      if (index.kind === 'create' || index.kind === 'replace') {
+        if (index.kind === 'replace' && !replaceExisting) throw new Error('Explicit confirmation is required to back up and replace this Base.');
+        backup = await this.writeIndexFile(index.file);
+        wroteIndex = true;
+        binding = { library: paths.library, formula: index.file.formula };
+      }
+      try {
+        await this.changePreferences({ ...paths, binding });
+      } catch (e) {
+        if (!wroteIndex) throw e;
+        throw new Error(`${errorText(e)}\nWrote ${paths.base}, but could not save the connection.${backup ? ` Backup: ${backup}` : ''}`);
+      }
+      this.errors = [...(plan.library?.issues ?? [])];
+      this.summary = `Inventory paths saved.${backup ? ` Backup: ${backup}` : ''}`;
+      if (index.kind === 'keep' && index.warning) this.errors.push(index.warning);
+      if (index.kind === 'keep' && index.scope) {
+        const scope = index.scope;
+        try {
+          if (scope.after !== scope.before) await this.process(paths.base, before => {
+            if (before !== scope.before) throw new Error('Base file changed. Use Repair Index Filter.');
+            return scope.after;
+          });
+          await this.changePreferences({ binding: { library: paths.library, formula: scope.formula } });
+        } catch (e) { this.errors.push(`Plugin Index: ${errorText(e)}`); }
+      }
+    });
   }
 
   private async backupFile(path: string, text: string): Promise<string> {
@@ -548,26 +634,31 @@ export default class InventoryPlugin extends Plugin {
     return backup;
   }
 
+  private async writeIndexFile(plan: IndexPlan): Promise<string> {
+    const text = makeBase(plan.library, plan.formula);
+    let backup = '';
+    if (plan.before !== null) {
+      backup = await this.backupFile(plan.path, plan.before);
+      try {
+        await this.process(plan.path, before => {
+          if (before !== plan.before) throw new Error('Base file changed. Review it again.');
+          return text;
+        });
+      } catch (e) {
+        throw new Error(`${errorText(e)}\nBackup: ${backup}`);
+      }
+    } else {
+      await this.parent(plan.path);
+      await this.app.vault.create(plan.path, text);
+    }
+    return backup;
+  }
+
   applyIndex(approved: IndexPlan): Promise<void> {
     return this.enqueue(async () => {
       const plan = await this.previewIndex(approved.path);
       verifyPreview(approved, plan);
-      const text = makeBase(plan.library, plan.formula);
-      let backup = '';
-      if (plan.before !== null) {
-        backup = await this.backupFile(plan.path, plan.before);
-        try {
-          await this.process(plan.path, before => {
-            if (before !== plan.before) throw new Error('Base file changed. Review it again.');
-            return text;
-          });
-        } catch (e) {
-          throw new Error(`${errorText(e)}\nBackup: ${backup}`);
-        }
-      } else {
-        await this.parent(plan.path);
-        await this.app.vault.create(plan.path, text);
-      }
+      const backup = await this.writeIndexFile(plan);
       try {
         await this.changePreferences({ base: plan.path, binding: { library: plan.library, formula: plan.formula } });
       } catch (e) {
@@ -624,8 +715,8 @@ export default class InventoryPlugin extends Plugin {
       this.guardOperation();
       const library = this.settings.library && inventoryPath(this.settings.library, this.app.vault.configDir);
       if (!library || pathState(this.app.vault, library) !== 'Ready') throw new Error(library
-        ? `Plugin Library unavailable: ${library}. Locate it or run Fill Missing Plugin Notes.`
-        : 'Locate or create a Plugin Library first.');
+        ? `Plugin Library unavailable: ${library}. Edit the path in Settings or run Fill Missing Plugin Notes.`
+        : 'Connect or create a Plugin Library in Settings first.');
       if (this.settings.sourceVersion !== 0) await this.updateRegistry();
       const snap = await this.activeSnapshot();
       const index = await indexLibrary(this.app.vault, library);
@@ -722,7 +813,7 @@ export default class InventoryPlugin extends Plugin {
 
   openIndex(): Promise<void> {
     const file = this.settings.base ? this.app.vault.getAbstractFileByPath(this.settings.base) : null;
-    if (!(file instanceof TFile) || file.extension !== 'base') throw new Error('Plugin Index unavailable. Run Set Plugin Index.');
+    if (!(file instanceof TFile) || file.extension !== 'base') throw new Error('Plugin Index unavailable. Set the path in Plugin Inventory Peng settings.');
     return this.app.workspace.getLeaf('tab').openFile(file);
   }
 }

@@ -112,3 +112,18 @@
 - 隔离实例使用两条测试记录、内存设置和插件专用测试目录。设置页默认显示 Configuration 模板。通过 DOM 输入和按钮操作保存双语 Markdown；重建设置页后值一致。
 - 通过注册命令回调进入补齐预览，确认后同时缺失的 Library 和 Index 场景成功生成两篇笔记，两篇均使用已保存模板。随后通过设置页重复打开补齐预览，新增为零。独立创建的 Base 文件包含正确的 Library 筛选。
 - 测试文件已清理。未安装或替换 Vault 内运行产物。设置持久性和 Base 接管备份由自动化测试覆盖；本轮未执行真实系统输入法或手动键盘验收。
+
+## 2026-11-19：内联路径与命令精简
+
+- Typecheck、50 项测试、lint（0 errors，129 warnings）、构建及 `git diff --check` 通过。
+- 通过统一脚本将构建产物同步到 `Obsidian AI Coding`，定向重载 `plugin-inventory-peng`。产物与源码构建逐一相同，`data.json` 哈希在部署及验收后相同。
+- 实际运行的设置页显示两个生效路径，底部创建入口默认折叠。打开命令面板，搜索插件名仅显示 Open Plugin Index、Refresh Plugin Status、Fill Missing Plugin Notes。
+- 同一 Vault 中使用独立插件实例、内存设置和专用测试目录验收。首次界面提供两条入口。空根目录需要显式选择 Vault 根目录。确认创建后返回生效路径。路径候选经模拟方向键和 Enter 验证。预览、修改草稿和取消不写文件。两个路径一起修改只保存一次连接，旧 Base 保持原样，新 Base 备份与原件一致。已配置但缺失的 Library 仍显示路径编辑，且没有 Index 时可以补齐。
+- 验收生成的文件及备份已清理。未用实际清单执行创建、补齐或 Base 接管。键盘交互通过真实 Obsidian 中派发的 DOM 事件验证。
+
+## 2026-11-19：紧凑设置页
+
+- Typecheck、50 项测试、lint（0 errors，129 warnings）、构建及 `git diff --check` 通过。最新构建已同步到 `Obsidian AI Coding`，并定向重载。三个产物逐一匹配，`data.json` 哈希一致。
+- 在实际设置窗口检查 Inventory、Note Template、Preferences。Inventory 只有两条资源行，健康状态和干净草稿没有占用额外行。新版 Inventory 标题到 Note Template 标题的距离为 157 CSS px。旧版测得 726 CSS px。
+- 当前设置内容宽度 612 CSS px 时，两行的路径与按钮同排。在应用内将同一区域临时约束为 596、520、340 CSS px 测试。596 px 保持同排，520 和 340 px 的按钮组换到路径下方，无横向溢出。
+- 隔离测试确认 Review 和 Discard 随路径草稿显示，模板保存按钮随模板草稿显示，Repair Filter 只出现在需要修复的 Index 行。路径候选、预览取消、Base 接管备份和缺失 Library 补齐继续通过。实际清单未执行写入。

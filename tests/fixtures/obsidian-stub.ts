@@ -12,5 +12,7 @@ export class Modal {}
 export class Notice {}
 export class PluginSettingTab {}
 export class Setting {}
+export class ButtonComponent {}
+export class TextComponent {}
 export const getLanguage = () => 'en';
 export const requestUrl = async () => { throw new Error('offline test'); };

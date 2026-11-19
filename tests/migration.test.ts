@@ -276,6 +276,7 @@ type ModernFixturePlugin =
     scanner: { scan: (includeCore?: boolean, legacy?: boolean, registry?: ReadonlySet<string> | null, includeDisabledCore?: boolean) => Promise<Snapshot> };
     followRename: (from: string, to: string) => Promise<void>;
     loadData: () => Promise<InventoryState>;
+    saveData: (data: InventoryState) => Promise<void>;
     addCommand: (command: { id: string; name: string }) => void;
     addSettingTab: () => void;
     addRibbonIcon: () => void;
@@ -322,7 +323,7 @@ test('relocation preserves custom Index views without creating missing notes', a
   const f = currentFixture();
   f.folder('Moved'); f.file('Moved/Personal.md', 'Personal');
   f.content.set('Old/in.base', f.content.get('Old/in.base')!.replace('All Plugins', 'My custom view'));
-  await f.p.applyLocate(await f.p.previewLocate('Moved'));
+  await f.p.applyPathChanges(await f.p.previewPathChanges({ library: 'Moved', base: 'Old/in.base' }));
   assert.equal(f.p.settings.library, 'Moved');
   assert.match(f.content.get('Old/in.base')!, /My custom view/);
   assert.match(f.content.get('Old/in.base')!, /file\.inFolder\("Moved"\)/);
@@ -446,8 +447,7 @@ test('v2 load preserves configured paths without saving data or scanning, and re
   assert.equal('initialized' in f.p.settings, false);
   assert.equal(f.getSaved(), undefined);
   assert.deepEqual([...commands.values()], [
-    'Create Plugin Inventory', 'Open Plugin Index', 'Refresh Plugin Status', 'Fill Missing Plugin Notes',
-    'Locate Plugin Library', 'Set Plugin Index', 'Import Plugin Notes', 'Manage Excluded Plugins', 'Reset Plugin Index'
+    'Open Plugin Index', 'Refresh Plugin Status', 'Fill Missing Plugin Notes'
   ]);
 });
 
@@ -482,9 +482,96 @@ test('relocation leaves an ambiguous Index unchanged while committing the Librar
   f.folder('New');
   const ambiguous = 'filters:\n  and:\n    - \'file.inFolder("Old/Library")\'\n    - \'file.inFolder("New")\'\nviews: []\n';
   f.content.set('Old/in.base', ambiguous);
-  await f.p.applyLocate(await f.p.previewLocate('New'));
+  await f.p.applyPathChanges(await f.p.previewPathChanges({ library: 'New', base: 'Old/in.base' }));
   assert.equal(f.p.settings.library, 'New');
   assert.equal(f.content.get('Old/in.base'), ambiguous);
   assert.match(await f.p.indexWarning(), /Repair Index Filter/);
   assert.match(f.p.errors.join('\n'), /scope was changed/);
+});
+
+test('changing both paths backs up only the selected Index and saves the final pair', async () => {
+  const f = currentFixture();
+  f.folder('New');
+  f.file('New/Selected.base', 'views: [] # unrelated\n');
+  const old = f.content.get('Old/in.base');
+  const plan = await f.p.previewPathChanges({ library: 'New', base: 'New/Selected.base' });
+  assert.equal(plan.index.kind, 'replace');
+  assert.equal(f.getSaved(), undefined);
+  await assert.rejects(f.p.applyPathChanges(plan), /explicit/i);
+  assert.equal(f.content.get('New/Selected.base'), 'views: [] # unrelated\n');
+  await f.p.applyPathChanges(plan, true);
+  assert.equal(f.content.get('Old/in.base'), old);
+  assert.match(f.content.get('New/Selected.base')!, /file\.inFolder\("New"\)/);
+  assert.ok([...f.content].some(([path, text]) => path.includes('/inventory-backups/') && text === 'views: [] # unrelated\n'));
+  assert.equal(f.getSaved()?.library, 'New');
+  assert.equal(f.getSaved()?.base, 'New/Selected.base');
+});
+
+test('connecting a compatible existing Index and disconnecting it never write the Base', async () => {
+  const f = currentFixture();
+  const compatible = api.makeBase('Old/Library', '""').replace('All Plugins', 'My views') as string;
+  f.file('Existing.base', compatible);
+  const plan = await f.p.previewPathChanges({ library: 'Old/Library', base: 'Existing.base' });
+  assert.equal(plan.index.kind, 'connect');
+  await f.p.applyPathChanges(plan);
+  assert.equal(f.content.get('Existing.base'), compatible);
+  const disconnect = await f.p.previewPathChanges({ library: 'Old/Library', base: '' });
+  assert.equal(disconnect.index.kind, 'disconnect');
+  await f.p.applyPathChanges(disconnect);
+  assert.equal(f.getSaved()?.base, '');
+  assert.equal(f.content.get('Existing.base'), compatible);
+});
+
+test('changed targets or active paths invalidate the whole path preview', async () => {
+  const f = currentFixture();
+  f.folder('New'); f.file('New/Selected.base', 'views: []');
+  const plan = await f.p.previewPathChanges({ library: 'New', base: 'New/Selected.base' });
+  f.content.set('New/Selected.base', 'views: [] # revised');
+  await assert.rejects(f.p.applyPathChanges(plan, true), /changed since the preview/);
+  const revised = await f.p.previewPathChanges({ library: 'New', base: 'New/Selected.base' });
+  f.p.settings.base = 'Other.base';
+  await assert.rejects(f.p.applyPathChanges(revised, true), /changed since the preview/);
+  assert.equal(f.p.settings.library, 'Old/Library');
+  assert.equal(f.content.get('New/Selected.base'), 'views: [] # revised');
+});
+
+test('a failed settings save reports a completed Index write while keeping the prior connection', async () => {
+  const f = currentFixture();
+  f.folder('New');
+  const oldBase = f.content.get('Old/in.base');
+  const plan = await f.p.previewPathChanges({ library: 'New', base: 'New/Created.base' });
+  f.p.saveData = async () => { throw new Error('disk full'); };
+  await assert.rejects(f.p.applyPathChanges(plan), /Wrote New\/Created.base, but could not save the connection/);
+  assert.equal(f.p.settings.library, 'Old/Library');
+  assert.equal(f.p.settings.base, 'Old/in.base');
+  assert.equal(f.content.get('Old/in.base'), oldBase);
+  assert.match(f.content.get('New/Created.base')!, /file\.inFolder\("New"\)/);
+});
+
+test('a failed quick create leaves the current inventory linked and reports the created notes', async () => {
+  const f = currentFixture();
+  const plan = await f.p.previewCreate('New');
+  const create = f.app.vault.create;
+  f.app.vault.create = async (path, data) => {
+    if (path.endsWith('.base')) throw new Error('write failed');
+    return create(path, data);
+  };
+  await assert.rejects(f.p.applyCreate(plan), /1 notes were created in New\/Plugin Library/);
+  assert.equal(f.p.settings.library, 'Old/Library');
+  assert.equal(f.p.settings.base, 'Old/in.base');
+  assert.equal(f.getSaved(), undefined);
+});
+
+test('a compatible scalar folder filter is connected intact and follows Library relocation', async () => {
+  const f = currentFixture();
+  const original = 'filters: \'file.inFolder("Old/Library")\'\nviews: [{type: table, name: My custom view}]\n';
+  f.file('Scalar.base', original);
+  const plan = await f.p.previewPathChanges({ library: 'Old/Library', base: 'Scalar.base' });
+  assert.equal(plan.index.kind, 'connect');
+  await f.p.applyPathChanges(plan);
+  assert.equal(f.content.get('Scalar.base'), original);
+  f.folder('New');
+  await f.p.applyPathChanges(await f.p.previewPathChanges({ library: 'New', base: 'Scalar.base' }));
+  assert.match(f.content.get('Scalar.base')!, /file\.inFolder\("New"\)/);
+  assert.match(f.content.get('Scalar.base')!, /My custom view/);
 });

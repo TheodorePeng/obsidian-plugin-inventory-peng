@@ -178,13 +178,24 @@ export function makeBase(library: string, formula: string): string {
     ]
   }, { lineWidth: 0 });
 }
+export function compatibleIndexFormula(text: string, library: string): string | null {
+  const doc = parseDocument(text);
+  if (doc.errors.length || !isMap(doc.contents) || !isSeq(doc.get('views'))) return null;
+  const directScope = doc.get('filters') === folderClause(library);
+  const and = doc.getIn(['filters', 'and'], true);
+  const scopes = isSeq(and) ? and.items.map(String).filter(filter => /^file\.inFolder\s*\(/.test(filter)) : [];
+  if (!directScope && (scopes.length !== 1 || scopes[0] !== folderClause(library))) return null;
+  const formula = doc.getIn(['formulas', 'Settings']);
+  return typeof formula === 'string' ? formula : '';
+}
+
 /** Patch only a known managed scope and an unchanged managed formula. */
 export function patchBase(text: string, oldLibrary: string, library: string, oldFormula: string, formula: string, recoverAppliedScope = false): string {
   const doc = parseDocument(text);
   if (doc.errors.length || !isMap(doc.contents)) throw new Error('Invalid Base YAML');
+  const filter = doc.get('filters');
   const and = doc.getIn(['filters', 'and'], true);
-  if (!isSeq(and)) throw new Error('Managed Base scope was changed; automatic repair stopped');
-  const filters = and.items.map(String);
+  const filters = isSeq(and) ? and.items.map(String) : typeof filter === 'string' ? [filter] : [];
   const matches = filters.flatMap((filter, i) => filter === folderClause(oldLibrary) ? [i] : []);
   if (oldLibrary !== library && recoverAppliedScope) {
     const targets = filters.filter(filter => filter === folderClause(library));
@@ -193,7 +204,11 @@ export function patchBase(text: string, oldLibrary: string, library: string, old
   }
   if (matches.length !== 1) throw new Error('Managed Base scope was changed; automatic repair stopped');
   let changed = false;
-  if (oldLibrary !== library) { and.set(matches[0], folderClause(library)); changed = true; }
+  if (oldLibrary !== library) {
+    if (isSeq(and)) and.set(matches[0], folderClause(library));
+    else doc.set('filters', folderClause(library));
+    changed = true;
+  }
   if (oldFormula !== formula && doc.getIn(['formulas', 'Settings']) === oldFormula) {
     doc.setIn(['formulas', 'Settings'], formula); changed = true;
   }

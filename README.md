@@ -39,7 +39,7 @@ BRAT 的界面和命令名称可能随版本变化，具体以 [BRAT 官方仓�
 
 ## 快速开始
 
-1. 启用插件。使用 **Create Plugin Inventory** 选择根目录。留空表示 Vault 根目录。启用 Obsidian 官方 **Bases** 后，可以打开 `.base` 文件。
+1. 启用插件，打开设置。首次可选择 **Use Existing Paths** 接回已有目录，或用 **Create Plugin Inventory** 选根目录新建。要使用 Vault 根目录，请点击 **Use Vault Root**。启用 Obsidian 官方 **Bases** 后，可以打开 `.base` 文件。
 2. 审阅生成预览。确认后插件生成默认 Library、插件笔记和 Base，并将其设为当前清单。
 3. 用 **Open Plugin Index** 查看清单。用 **Refresh Plugin Status** 更新已有笔记，用 **Fill Missing Plugin Notes** 预览并补齐 Markdown。
 4. 在设置中的 **Note Template** 编辑新笔记正文，点击 **Save Template** 后生效。默认提供 Configuration 表格，保存空模板可生成空正文。
@@ -53,7 +53,7 @@ Plugins/
     └── 每个插件一篇 Markdown 笔记
 ```
 
-每个 Vault 同时连接一个 Library 和一个可选的 Base。两条路径可独立更改。首次安装、重新开始或删除旧清单后，都可运行 **Create Plugin Inventory**。创建流程只使用空闲目标，旧路径和名称不会在升级时自动改写。
+每个 Vault 同时连接一个 Library 和一个可选的 Base。两条路径可独立更改。已有清单时，**Create Plugin Inventory…** 收在设置页底部。需要另起一套时，展开并预览，再点击 **Create and Use**。创建流程只使用空闲目标，旧路径和名称不会在升级时自动改写。
 
 ### 清单的数据究竟在哪里？
 
@@ -81,7 +81,7 @@ Plugins/
 ### Source 与旧版清单
 
 - **Built-in** 是内置功能。**Community** 表示插件 ID 在已核验的官方社区目录中。**Non-community** 表示目录未收录，或目前没有可用目录缓存。
-- 手动刷新按缓存时效请求官方社区目录。失败时保留旧缓存。目录校验状态在设置页显示。
+- 手动刷新按缓存时效请求官方社区目录。失败时保留旧缓存。社区目录核查失败时，设置页显示原因。
 - 升级保留原 Library 和 Base 路径，旧格式笔记仍可识别。旧版有未完成操作时，在 **Legacy Recovery** 单独处理。
 - **Advanced URI** 可用时，新建的 Base 提供 Settings 链接，刷新也会维护各插件笔记的 Settings 属性。选择新 Base 或执行重置时可重新生成对应公式。
 
@@ -177,15 +177,19 @@ AI 必须能访问相应的文件或 Obsidian 工具才能读取和操作；仅�
 
 AI 可以直接读取复制后的 Notes，根据你逐个指定的插件进行安装和配置，不必先安装本管理插件。复制文件本身不会安装插件；目标 Vault 的状态与原 Vault 也可能不同。
 
-在新 Vault 安装插件后，用 **Locate Plugin Library** 连接复制过来的笔记目录。用 **Set Plugin Index** 创建或接管 Base，再按需刷新插件状态。
+在新 Vault 安装插件后，在设置页填写 **Plugin Library** 和 **Plugin Index** 路径，点击 **Review Path Changes**，核对后应用。
 
 ## 移动清单、补齐和导入
 
-- 在 Obsidian 文件列表改名或移动当前 Library、Base 或其父目录，插件会跟随路径。Library 移动后只更新 Base 中可确认的受管目录筛选。如果关闭 Obsidian 后才移动，用 **Locate Plugin Library** 重新定位。
+- 在 Obsidian 文件列表改名或移动当前 Library、Base 或其父目录，插件会跟随路径。Library 移动后只更新 Base 中可确认的受管目录筛选。如果关闭 Obsidian 后才移动，在设置页修改 **Plugin Library** 或 **Plugin Index** 的路径。
 - 删除部分笔记或整个 Library 后，使用 **Fill Missing Plugin Notes**。预览确认后，插件在当前配置的目录生成缺失记录。Base 即使缺失也可补齐。补建只使用当前插件信息和模板，手写内容需从原笔记导入。
 - 用 **Import Plugin Notes** 从指定旧目录复制原笔记。相同身份默认保留当前文件；明确选择替换时，会先备份当前文件。
-- **Set Plugin Index** 可以接管已有 `.base`。确认后先备份原文件，再写入标准索引。**Reset Plugin Index** 同样先预览和备份，仅处理 Base。Base 配置问题不会阻止笔记操作。
+- 在 **Plugin Index** 填入已有 `.base` 可以复用它。目标已经按最终 Library 筛选时直接连接，保留原文件。否则预览后用 **Back Up and Replace** 接管。**Reset…** 在设置页的 **Plugin Index** 一行，同样先预览和备份。Base 配置问题不会阻止笔记操作。
 - 日常刷新只扫描当前 Library 内的笔记。重复身份会报告冲突。扫描插件不完整时，插件会提示原因并保留已有数据。插件不会扫描或导出其他插件的配置。
+
+## 命令面板与设置入口
+
+命令面板只保留 **Open Plugin Index**、**Refresh Plugin Status** 和 **Fill Missing Plugin Notes**，原快捷键继续可用。其余操作在设置页完成。通过路径输入代替原 **Locate Plugin Library** 和 **Set Plugin Index**。创建、导入、重置和排除项入口分别位于 **Inventory** 设置页底部、**Plugin Library** 一行、**Plugin Index** 一行和 **Preferences**。绑定过已移除命令的快捷键需要重新安排。
 
 ## 开发
 
